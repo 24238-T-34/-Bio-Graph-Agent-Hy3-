@@ -1,0 +1,32 @@
+# PyCharm / IDE 缓存
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+
+# Python 虚拟环境与缓存
+venv/
+ENV/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Streamlit 本地配置与运行时缓存
+.streamlit/
+*.log
+
+# 项目生成的临时/输出文件（图谱与数据导出）
+*.pdf
+*.html
+*.csv
+
+# 敏感隐私信息（API Key 等）
+.env
+
+lib/
