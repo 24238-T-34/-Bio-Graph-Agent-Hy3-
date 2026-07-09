@@ -1,7 +1,7 @@
 import streamlit as st
 import tempfile
 import os
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 from back_logic import BioGraphPipeline,GraphVisualizer
 import streamlit.components.v1 as components
 import gc
@@ -22,6 +22,10 @@ if "master_entities" not in st.session_state:
     st.session_state.master_entities = []
 if "master_relations" not in st.session_state:
     st.session_state.master_relations = []
+if "show_results" not in st.session_state:
+    st.session_state.show_results = False
+if "html_data" not in st.session_state:
+    st.session_state.html_data = ""
 
 # ==========================================
 # 侧边栏配置：核心 API 和模型选择
@@ -155,11 +159,14 @@ if uploaded_file and start_button:
     else:
         # 渲染在双栏下方，让最终的巨幅知识图谱能占满整张屏幕，视觉极其震撼
         st.markdown("---")
-        with st.spinner(f"🧠 智能体正在解析第 {start_page} 到 {end_page} 页..."):
-            try:
-                # 实例化 Pipeline 并传入动态模型
-                pipeline = BioGraphPipeline(api_key=api_key, model=selected_model_id)
 
+        # 🛠️ 核心 UI 修复：将 try 提到最外层，内部所有的 spinner 扁平化独立，避免重叠！
+        try:
+            # 实例化 Pipeline 并传入动态模型
+            pipeline = BioGraphPipeline(api_key=api_key, model=selected_model_id)
+
+            # 🟢 阶段一：独立的解析转圈
+            with st.spinner(f"🧠 智能体正在解析第 {start_page} 到 {end_page} 页..."):
                 # 1. 跑当前这篇文献，拿到新数据
                 new_entities, new_relations = pipeline.run(
                     tmp_path,
@@ -170,133 +177,105 @@ if uploaded_file and start_button:
                     source_name=uploaded_file.name
                 )
 
-                # 🔥 核心升级 3：跨文献智能对齐与融合 (Entity Alignment)
-                if append_mode and len(st.session_state.master_entities) > 0:
-                    with st.spinner("🔗 正在进行跨文献 AI 语义对齐与图谱融合..."):
-                        # 1. 呼叫大模型裁判，获取同义词映射表 (如: {"TP53": "p53"})
-                        alignment_map = pipeline.agent.align_global_entities(
-                            st.session_state.master_entities,
-                            new_entities
-                        )
+            # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)
+            if append_mode and len(st.session_state.master_entities) > 0:
+                with st.spinner("🔗 正在进行跨文献 AI 语义对齐与图谱融合..."):
+                    # 1. 呼叫大模型裁判，获取同义词映射表 (如: {"TP53": "p53"})
+                    alignment_map = pipeline.agent.align_global_entities(
+                        st.session_state.master_entities,
+                        new_entities
+                    )
 
-                        if alignment_map:
-                            st.success(f"🧬 AI 识别到 {len(alignment_map)} 个跨文献同义实体，正在自动打通图谱脉络！")
+                    if alignment_map:
+                        st.success(f"🧬 AI 识别到 {len(alignment_map)} 个跨文献同义实体！")
 
-                            # ====================================================
-                            # 2. 遍历新实体，执行融合手术 (双重拦截：精确匹配 + 语义对齐)
-                            # ====================================================
-                            aligned_new_entities = []
+                        # ====================================================
+                        # 2. 遍历新实体，执行融合手术 (双重拦截：精确匹配 + 语义对齐)
+                        # ====================================================
+                        aligned_new_entities = []
+                        master_names = {ent["standard_name"]: ent for ent in st.session_state.master_entities}
 
-                            # 先把现有的标准节点名做个快速索引表，方便代码级秒查
-                            master_names = {ent["standard_name"]: ent for ent in st.session_state.master_entities}
+                        for new_ent in new_entities:
+                            new_name = new_ent.get("standard_name")
+                            new_source = new_ent.get("doc_source", "")
 
-                            for new_ent in new_entities:
-                                new_name = new_ent.get("standard_name")
-                                new_source = new_ent.get("doc_source", "")
+                            # 🛡️ 拦截网 1：如果名字一模一样（代码级精准匹配）
+                            if new_name in master_names:
+                                master_ent = master_names[new_name]
+                                aliases = master_ent.setdefault("aliases", [])
+                                for new_alias in new_ent.get("aliases", []):
+                                    if new_alias not in aliases and new_alias != new_name:
+                                        aliases.append(new_alias)
+                                old_source = master_ent.get("doc_source", "")
+                                if new_source and new_source not in old_source:
+                                    master_ent["doc_source"] = f"{old_source} | {new_source}"
 
-                                # 🛡️ 拦截网 1：如果名字一模一样（代码级精准匹配）
-                                if new_name in master_names:
-                                    master_ent = master_names[new_name]
-
-                                    # 融合别名
+                            # 🛡️ 拦截网 2：名字不一样，但大模型裁判认为它们是同一个东西
+                            elif new_name in alignment_map:
+                                master_name = alignment_map[new_name]
+                                if master_name in master_names:
+                                    master_ent = master_names[master_name]
                                     aliases = master_ent.setdefault("aliases", [])
+                                    if new_name not in aliases:
+                                        aliases.append(new_name)
                                     for new_alias in new_ent.get("aliases", []):
-                                        if new_alias not in aliases and new_alias != new_name:
+                                        if new_alias not in aliases and new_alias != master_name:
                                             aliases.append(new_alias)
-
-                                    # 💡 完美拼接文献来源
                                     old_source = master_ent.get("doc_source", "")
                                     if new_source and new_source not in old_source:
                                         master_ent["doc_source"] = f"{old_source} | {new_source}"
-
-                                # 🛡️ 拦截网 2：名字不一样，但大模型裁判认为它们是同一个东西
-                                elif new_name in alignment_map:
-                                    master_name = alignment_map[new_name]
-
-                                    # 确保裁判没瞎编出不存在的名字
-                                    if master_name in master_names:
-                                        master_ent = master_names[master_name]
-                                        aliases = master_ent.setdefault("aliases", [])
-
-                                        # 将新本体和它的别名全都并入原有的别名库
-                                        if new_name not in aliases:
-                                            aliases.append(new_name)
-                                        for new_alias in new_ent.get("aliases", []):
-                                            if new_alias not in aliases and new_alias != master_name:
-                                                aliases.append(new_alias)
-
-                                        # 💡 完美拼接文献来源
-                                        old_source = master_ent.get("doc_source", "")
-                                        if new_source and new_source not in old_source:
-                                            master_ent["doc_source"] = f"{old_source} | {new_source}"
-                                    else:
-                                        # 如果大模型返回的目标实体不存在，还是老老实实当新实体加进去
-                                        aligned_new_entities.append(new_ent)
-
-                                # 🛡️ 通行证：既不是同名，又不是同义词，确认为全新的实体！
                                 else:
                                     aligned_new_entities.append(new_ent)
-
-                        # 3. 移花接木：将新文献抽出的【关系网】强行接入全局标准节点
-                        for rel in new_relations:
-                            # 替换起点
-                            if rel.get("source") in alignment_map:
-                                rel["source"] = alignment_map[rel["source"]]
-                            # 替换终点
-                            if rel.get("target") in alignment_map:
-                                rel["target"] = alignment_map[rel["target"]]
-
-                        # ====================================================
-                        # 4. 🔗 核心大招：关系去重与证据融合 (同类合并，异类保留)
-                        # ====================================================
-                        # 为全局现有的关系建立一个基于元组的快速索引字典
-                        # Key 设为: (起点, 终点, 关系类型)
-                        master_rel_map = {}
-                        for existing_rel in st.session_state.master_relations:
-                            key = (existing_rel.get("source"), existing_rel.get("target"),
-                                   existing_rel.get("relation"))
-                            master_rel_map[key] = existing_rel
-
-                        # 遍历刚才已经替换好标准名的新关系
-                        for rel in new_relations:
-                            key = (rel.get("source"), rel.get("target"), rel.get("relation"))
-
-                            if key in master_rel_map:
-                                # 🛡️ 命中同类关系：进行证据与来源的无损拼接！
-                                existing_rel = master_rel_map[key]
-                                # （用 .get("weight", 1) 可以完美兼容老数据或大模型提取出的初始结构）
-                                existing_rel["weight"] = existing_rel.get("weight", 1) + 1
-
-                                # 1. 拼接原文证据 (用回车分割，让悬停提示框更易读)
-                                old_ev = existing_rel.get("evidence", "")
-                                new_ev = rel.get("evidence", "")
-                                if new_ev and new_ev not in old_ev:
-                                    existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
-
-                                # 2. 拼接来源文献
-                                old_src = existing_rel.get("doc_source", "")
-                                new_src = rel.get("doc_source", "")
-                                if new_src and new_src not in old_src:
-                                    existing_rel["doc_source"] = f"{old_src} | {new_src}"
                             else:
-                                # 🛡️ 异类关系或全新关系：不仅加入全局列表，也加入索引字典防本体内重复
-                                rel["weight"] = 1
-                                st.session_state.master_relations.append(rel)
-                                master_rel_map[key] = rel
+                                aligned_new_entities.append(new_ent)
 
-                        # 5. 将处理后的“干净”实体数据并入全局中枢（关系已经在上面 append 进去了）
-                        st.session_state.master_entities.extend(aligned_new_entities)
+                    # 3. 移花接木：将新文献抽出的【关系网】强行接入全局标准节点
+                    for rel in new_relations:
+                        if rel.get("source") in alignment_map:
+                            rel["source"] = alignment_map[rel["source"]]
+                        if rel.get("target") in alignment_map:
+                            rel["target"] = alignment_map[rel["target"]]
 
-                elif append_mode:
-                    # 如果是第一次运行，直接写入记忆库
-                    st.session_state.master_entities.extend(new_entities)
-                    st.session_state.master_relations.extend(new_relations)
-                else:
-                    # 如果未开启追加，直接覆盖清洗
-                    st.session_state.master_entities = new_entities
-                    st.session_state.master_relations = new_relations
+                    # ====================================================
+                    # 4. 🔗 核心大招：关系去重与证据融合 (同类合并，异类保留)
+                    # ====================================================
+                    master_rel_map = {}
+                    for existing_rel in st.session_state.master_relations:
+                        key = (existing_rel.get("source"), existing_rel.get("target"), existing_rel.get("relation"))
+                        master_rel_map[key] = existing_rel
 
-                # 🔥 核心修正：先实例化你的绘图类，再调用它的绘图方法，彻底解决 AttributeError！
+                    for rel in new_relations:
+                        key = (rel.get("source"), rel.get("target"), rel.get("relation"))
+                        if key in master_rel_map:
+                            existing_rel = master_rel_map[key]
+                            existing_rel["weight"] = existing_rel.get("weight", 1) + 1
+
+                            old_ev = existing_rel.get("evidence", "")
+                            new_ev = rel.get("evidence", "")
+                            if new_ev and new_ev not in old_ev:
+                                existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+                            old_src = existing_rel.get("doc_source", "")
+                            new_src = rel.get("doc_source", "")
+                            if new_src and new_src not in old_src:
+                                existing_rel["doc_source"] = f"{old_src} | {new_src}"
+                        else:
+                            rel["weight"] = 1
+                            st.session_state.master_relations.append(rel)
+                            master_rel_map[key] = rel
+
+                    # 5. 将处理后的“干净”实体数据并入全局中枢
+                    st.session_state.master_entities.extend(aligned_new_entities)
+
+            elif append_mode:
+                st.session_state.master_entities.extend(new_entities)
+                st.session_state.master_relations.extend(new_relations)
+            else:
+                st.session_state.master_entities = new_entities
+                st.session_state.master_relations = new_relations
+
+            # 🟢 阶段三：独立的渲染转圈
+            with st.spinner("🎨 正在生成网络拓扑交互图谱..."):
                 visualizer = GraphVisualizer()
                 html_file = "bio_knowledge_graph.html"
                 visualizer.generate_html(
@@ -305,75 +284,54 @@ if uploaded_file and start_button:
                     output_file=html_file
                 )
 
-                if os.path.exists(html_file):
-                    st.success("🎉 图谱生成与数据融合成功！")
-                    with open(html_file, "r", encoding="utf-8") as f:
-                        html_data = f.read()
+            # 🟢 阶段四：所有处理完成，将结果存入全局保险箱
+            if os.path.exists(html_file):
+                st.success("🎉 图谱生成与数据融合成功！")
+                with open(html_file, "r", encoding="utf-8") as f:
+                    st.session_state.html_data = f.read()
 
-                    # ==========================================
-                    # 📥 结果多元化导出下载区（全部换成 master 记忆库数据）
-                    # ==========================================
-                    st.markdown("### 📥 4. 知识图谱结果导出")
+                # 开启展示开关
+                st.session_state.show_results = True
+            else:
+                st.error("❌ 图谱文件未生成。")
+                st.session_state.show_results = False
 
-                    # 1. 转换数据为标准 JSON 格式 (读取 master)
-                    entities_json = json.dumps(st.session_state.master_entities, ensure_ascii=False, indent=2)
-                    relations_json = json.dumps(st.session_state.master_relations, ensure_ascii=False, indent=2)
+        except Exception as e:
+            # 所有阶段任何一步报错，都会统一跳到这里处理，代码极其优雅
+            st.error(f"处理过程中发生错误：{e}")
 
-                    # 2. 转换数据为 CSV 格式 (读取 master)
-                    df_entities = pd.DataFrame(st.session_state.master_entities)
-                    if 'aliases' in df_entities.columns:
-                        df_entities['aliases'] = df_entities['aliases'].apply(
-                            lambda x: ", ".join(x) if isinstance(x, list) else x)
-                    csv_entities = df_entities.to_csv(index=False).encode('utf-8')
+# ==========================================
+# 📥 独立渲染区：结果多元化导出与图谱展示（防白屏刷新机制）
+# ==========================================
+# 🌟 注意：下面这段代码必须完全没有缩进，贴紧最左侧！
+if st.session_state.show_results and st.session_state.html_data:
+    st.markdown("### 📥 4. 知识图谱结果导出")
 
-                    df_relations = pd.DataFrame(st.session_state.master_relations)
-                    csv_relations = df_relations.to_csv(index=False).encode(
-                        'utf-8') if not df_relations.empty else b""
+    entities_json = json.dumps(st.session_state.master_entities, ensure_ascii=False, indent=2)
+    relations_json = json.dumps(st.session_state.master_relations, ensure_ascii=False, indent=2)
 
-                    # 3. 创建 4 横列并排排版的精美下载按钮
-                    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
-                    with btn_col1:
-                        st.download_button(
-                            label="📄 导出实体 (JSON)",
-                            data=entities_json,
-                            file_name="bio_entities_merged.json",
-                            mime="application/json",
-                            use_container_width=True
-                        )
-                    with btn_col2:
-                        st.download_button(
-                            label="📊 导出实体 (CSV)",
-                            data=csv_entities,
-                            file_name="bio_entities_merged.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    with btn_col3:
-                        st.download_button(
-                            label="🔗 导出关系 (CSV)",
-                            data=csv_relations,
-                            file_name="bio_relations_merged.csv",
-                            mime="text/csv",
-                            use_container_width=True
-                        )
-                    with btn_col4:
-                        st.download_button(
-                            label="🕸️ 导出交互图谱 (HTML)",
-                            data=html_data,
-                            file_name="bio_knowledge_graph_merged.html",
-                            mime="text/html",
-                            use_container_width=True
-                        )
+    df_entities = pd.DataFrame(st.session_state.master_entities)
+    if 'aliases' in df_entities.columns:
+        df_entities['aliases'] = df_entities['aliases'].apply(
+            lambda x: ", ".join(x) if isinstance(x, list) else x)
+    csv_entities = df_entities.to_csv(index=False).encode('utf-8')
 
-                    st.markdown("---")  # 分割线，下方展示全宽交互画布
+    df_relations = pd.DataFrame(st.session_state.master_relations)
+    csv_relations = df_relations.to_csv(index=False).encode('utf-8') if not df_relations.empty else b""
 
-                    # 🛡️ 使用专用组件渲染交互图谱
-                    components.html(html_data, height=800, scrolling=True)
+    btn_col1, btn_col2, btn_col3, btn_col4 = st.columns(4)
+    with btn_col1:
+        st.download_button("📄 导出实体 (JSON)", entities_json, "bio_entities.json", "application/json",
+                           use_container_width=True)
+    with btn_col2:
+        st.download_button("📊 导出实体 (CSV)", csv_entities, "bio_entities.csv", "text/csv", use_container_width=True)
+    with btn_col3:
+        st.download_button("🔗 导出关系 (CSV)", csv_relations, "bio_relations.csv", "text/csv", use_container_width=True)
+    with btn_col4:
+        st.download_button("🕸️ 导出交互图谱 (HTML)", st.session_state.html_data, "bio_graph.html", "text/html",
+                           use_container_width=True)
 
-                    # 🛡️ 阅后即焚，释放内存
-                    del html_data
-                    gc.collect()
-                else:
-                    st.error("❌ 图谱文件未生成。")
-            except Exception as e:
-                st.error(f"处理过程中发生错误：{e}")
+    st.markdown("---")
+
+    # 🛡️ 渲染图谱
+    components.html(st.session_state.html_data, height=800, scrolling=True)
