@@ -166,7 +166,8 @@ if uploaded_file and start_button:
                     start_page=start_page - 1,
                     end_page=end_page,
                     is_summary_only=is_summary_only,
-                    use_reflection=use_reflection
+                    use_reflection=use_reflection,
+                    source_name=uploaded_file.name
                 )
 
                 # 🔥 核心升级 3：跨文献智能对齐与融合 (Entity Alignment)
@@ -181,39 +182,60 @@ if uploaded_file and start_button:
                         if alignment_map:
                             st.success(f"🧬 AI 识别到 {len(alignment_map)} 个跨文献同义实体，正在自动打通图谱脉络！")
 
-                        # 2. 遍历新实体，执行融合手术
-                        aligned_new_entities = []
-                        for new_ent in new_entities:
-                            new_name = new_ent.get("standard_name")
+                            # ====================================================
+                            # 2. 遍历新实体，执行融合手术 (双重拦截：精确匹配 + 语义对齐)
+                            # ====================================================
+                            aligned_new_entities = []
 
-                            # 如果这个新实体其实是旧知识库里的某个实体
-                            if new_name in alignment_map:
-                                master_name = alignment_map[new_name]
+                            # 先把现有的标准节点名做个快速索引表，方便代码级秒查
+                            master_names = {ent["standard_name"]: ent for ent in st.session_state.master_entities}
 
-                                # 去全局记忆库里把本体找出来，更新它的属性
-                                for master_ent in st.session_state.master_entities:
-                                    if master_ent.get("standard_name") == master_name:
-                                        # 💡 完善版：不仅把新实体的标准名变成别名，还要把新实体自带的别名全盘接收！
+                            for new_ent in new_entities:
+                                new_name = new_ent.get("standard_name")
+                                new_source = new_ent.get("doc_source", "")
+
+                                # 🛡️ 拦截网 1：如果名字一模一样（代码级精准匹配）
+                                if new_name in master_names:
+                                    master_ent = master_names[new_name]
+
+                                    # 融合别名
+                                    aliases = master_ent.setdefault("aliases", [])
+                                    for new_alias in new_ent.get("aliases", []):
+                                        if new_alias not in aliases and new_alias != new_name:
+                                            aliases.append(new_alias)
+
+                                    # 💡 完美拼接文献来源
+                                    old_source = master_ent.get("doc_source", "")
+                                    if new_source and new_source not in old_source:
+                                        master_ent["doc_source"] = f"{old_source} | {new_source}"
+
+                                # 🛡️ 拦截网 2：名字不一样，但大模型裁判认为它们是同一个东西
+                                elif new_name in alignment_map:
+                                    master_name = alignment_map[new_name]
+
+                                    # 确保裁判没瞎编出不存在的名字
+                                    if master_name in master_names:
+                                        master_ent = master_names[master_name]
                                         aliases = master_ent.setdefault("aliases", [])
 
-                                        # 1. 新本体变成别名
+                                        # 将新本体和它的别名全都并入原有的别名库
                                         if new_name not in aliases:
                                             aliases.append(new_name)
-
-                                        # 2. 接收新实体附带的所有其他别名
                                         for new_alias in new_ent.get("aliases", []):
                                             if new_alias not in aliases and new_alias != master_name:
                                                 aliases.append(new_alias)
 
-                                        # 拼接多篇文献来源！(例如: "a.pdf | b.pdf")
+                                        # 💡 完美拼接文献来源
                                         old_source = master_ent.get("doc_source", "")
-                                        new_source = new_ent.get("doc_source", "")
                                         if new_source and new_source not in old_source:
                                             master_ent["doc_source"] = f"{old_source} | {new_source}"
-                                        break
-                            else:
-                                # 如果大模型认为这是一个完全没见过的新实体，则保留
-                                aligned_new_entities.append(new_ent)
+                                    else:
+                                        # 如果大模型返回的目标实体不存在，还是老老实实当新实体加进去
+                                        aligned_new_entities.append(new_ent)
+
+                                # 🛡️ 通行证：既不是同名，又不是同义词，确认为全新的实体！
+                                else:
+                                    aligned_new_entities.append(new_ent)
 
                         # 3. 移花接木：将新文献抽出的【关系网】强行接入全局标准节点
                         for rel in new_relations:
@@ -224,9 +246,46 @@ if uploaded_file and start_button:
                             if rel.get("target") in alignment_map:
                                 rel["target"] = alignment_map[rel["target"]]
 
-                        # 4. 将处理后的“干净”数据并入全局中枢
+                        # ====================================================
+                        # 4. 🔗 核心大招：关系去重与证据融合 (同类合并，异类保留)
+                        # ====================================================
+                        # 为全局现有的关系建立一个基于元组的快速索引字典
+                        # Key 设为: (起点, 终点, 关系类型)
+                        master_rel_map = {}
+                        for existing_rel in st.session_state.master_relations:
+                            key = (existing_rel.get("source"), existing_rel.get("target"),
+                                   existing_rel.get("relation"))
+                            master_rel_map[key] = existing_rel
+
+                        # 遍历刚才已经替换好标准名的新关系
+                        for rel in new_relations:
+                            key = (rel.get("source"), rel.get("target"), rel.get("relation"))
+
+                            if key in master_rel_map:
+                                # 🛡️ 命中同类关系：进行证据与来源的无损拼接！
+                                existing_rel = master_rel_map[key]
+                                # （用 .get("weight", 1) 可以完美兼容老数据或大模型提取出的初始结构）
+                                existing_rel["weight"] = existing_rel.get("weight", 1) + 1
+
+                                # 1. 拼接原文证据 (用回车分割，让悬停提示框更易读)
+                                old_ev = existing_rel.get("evidence", "")
+                                new_ev = rel.get("evidence", "")
+                                if new_ev and new_ev not in old_ev:
+                                    existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+                                # 2. 拼接来源文献
+                                old_src = existing_rel.get("doc_source", "")
+                                new_src = rel.get("doc_source", "")
+                                if new_src and new_src not in old_src:
+                                    existing_rel["doc_source"] = f"{old_src} | {new_src}"
+                            else:
+                                # 🛡️ 异类关系或全新关系：不仅加入全局列表，也加入索引字典防本体内重复
+                                rel["weight"] = 1
+                                st.session_state.master_relations.append(rel)
+                                master_rel_map[key] = rel
+
+                        # 5. 将处理后的“干净”实体数据并入全局中枢（关系已经在上面 append 进去了）
                         st.session_state.master_entities.extend(aligned_new_entities)
-                        st.session_state.master_relations.extend(new_relations)
 
                 elif append_mode:
                     # 如果是第一次运行，直接写入记忆库

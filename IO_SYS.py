@@ -121,8 +121,10 @@ class GraphVisualizer:
         # ==========================================
         node_heat = Counter()
         for item in global_relations:
-            node_heat[item.get("source")] += 1
-            node_heat[item.get("target")] += 1
+            # 🌟 修改：不再盲目 +1，而是读取合并后该通路真实拥有的热度权重
+            weight = item.get("weight", 1)
+            node_heat[item.get("source")] += weight
+            node_heat[item.get("target")] += weight
 
         # ==========================================
         # 🔥 绝杀修复 3：先统一、去重地添加所有实体节点
@@ -143,23 +145,33 @@ class GraphVisualizer:
             evidence = item.get("evidence", "无")
             doc_source = item.get("doc_source", "未知文献")
 
-            # 🛡️ 防御性编程：万一大模型产生幻觉，抽出的关系起点/终点不在刚才的实体列表里
-            # 紧急补齐一个红色的警告节点，防止找不到节点导致图谱彻底白屏！
+            # 🌟 提取连线被提及的真实热度权重
+            rel_weight = item.get("weight", 1)
+
+            # 💡 核心视觉优化：加入缩放系数
+            # 设定基础粗细为 1，每次热度增加只变粗 0.5 (你可以自由把 0.5 调成 0.3 或 0.2)
+            scale_factor = 0.5
+            display_width = 1 + (rel_weight * scale_factor)
+
+            # 🛡️ 防御性编程 (保持原样)
             for node in [source, target]:
                 if node not in entity_info_map:
-                    net.add_node(node, label=node, color="#ff9999", size=20, title=f"⚠️ 模型幻觉节点\n📄 来源: {doc_source}")
-                    entity_info_map[node] = {"aliases": [], "doc_source": doc_source} # 占位，防止后续重复补齐
+                    net.add_node(node, label=node, color="#ff9999", size=20,
+                                 title=f"⚠️ 模型幻觉节点\n📄 来源: {doc_source}")
+                    entity_info_map[node] = {"aliases": [], "doc_source": doc_source}
 
-            # 构建连线悬停提示框
-            edge_title = f"🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
+            # 强化悬停提示框
+            edge_title = f"🔥 证据热度: {rel_weight} 次提及\n🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
 
-            # 绘制连线
+            # 🌟 绝杀修改：把原来的 value 替换为受到公式严格控制的 width！
             if rel_type == "正作用":
-                net.add_edge(source, target, title=edge_title, color="#00ff00", arrows="to")
+                net.add_edge(source, target, title=edge_title, color="#00ff00", arrows="to", width=display_width)
             elif rel_type == "负作用":
-                net.add_edge(source, target, title=edge_title, color="#ff3333", arrows="to", width=3)
+                # 负作用本身就是重点，让它的基础粗细稍微再多 1 个像素
+                net.add_edge(source, target, title=edge_title, color="#ff3333", arrows="to",
+                             width=display_width + 1)
             else:
-                net.add_edge(source, target, title=edge_title, color="#aaaaaa", dashes=True)
+                net.add_edge(source, target, title=edge_title, color="#aaaaaa", dashes=True, width=display_width)
 
         net.save_graph(output_file)
         print(f"✨ [GraphVisualizer] 拓扑图已成功保存至: {output_file}")

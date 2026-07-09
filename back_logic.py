@@ -45,7 +45,7 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True):
+    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献"):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
         current_source = os.path.basename(pdf_path)
@@ -114,13 +114,13 @@ class BioGraphPipeline:
             self._merge_entities(chunk_entities)
 
             for ent in chunk_entities:
-                ent["doc_source"] = current_source
+                ent["doc_source"] = source_name
 
             chunk_relations = self.agent.extract_relations(chunk, self.global_entities)
             self._merge_relations(chunk_relations)
 
             for rel in chunk_relations:
-                rel["doc_source"] = current_source
+                rel["doc_source"] = source_name
                 # 按照你的要求，直接把来源拼接到原因 (reason) 里面，方便图谱展示
                 original_reason = rel.get("reason", "无详细解释")
                 rel["reason"] = f"{original_reason} [源自: {current_source}]"
