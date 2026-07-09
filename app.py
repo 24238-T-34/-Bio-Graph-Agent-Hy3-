@@ -8,6 +8,7 @@ import gc
 import fitz  # 🚀 优化：把 PyMuPDF 移到文件顶部，规范代码结构
 import json
 import pandas as pd
+import uuid
 
 
 # ==========================================
@@ -217,6 +218,122 @@ with right_col:
     else:
         st.info("👈 请先在左侧上传 PDF 文献以激活边界预览。")
 
+    # ==========================================
+    # 💾 记忆库与工程管理区 (左栏底部)
+    # ==========================================
+    st.markdown("---")
+    st.subheader("💾 记忆库与工程管理")
+
+    # 将新建和导出按钮并排放在一起
+    col_btn1, col_btn2 = st.columns(2)
+
+    # ✨ 1. 新建记忆库 (防误触触发器)
+    with col_btn1:
+        if st.button("✨ 新建空白工程", use_container_width=True):
+            # 点击后，反转确认面板的显示状态
+            st.session_state.show_new_confirm = not st.session_state.get("show_new_confirm", False)
+
+    # 📤 2. 导出记忆库 (.biokg)
+    with col_btn2:
+        export_placeholder = st.empty()
+
+        # 💡 先放一个假按钮占位，防止页面空白难看
+        with export_placeholder:
+            # 假按钮不能用 st.download_button，用普通的 st.button 伪装
+            if st.button("📤 导出工程 (.biokg)", use_container_width=True, key="fake_export_btn"):
+                # 如果用户在没数据时点击，弹出一个轻量级的提示（不会打乱排版）
+                st.toast("⚠️ 当前记忆库为空，请先上传并解析文献！", icon="🈳")
+
+    # 🚨 新建动作的“二次确认”安全锁面板
+    if st.session_state.get("show_new_confirm", False):
+        st.warning("⚠️ **危险操作**：这将清空当前所有图谱与历史记录！（建议先导出保存）\n\n您确定要从零开始吗？")
+        col_y, col_n = st.columns(2)
+        with col_y:
+            if st.button("🔴 确定清空", use_container_width=True):
+                # 清空内存中的所有数据
+                st.session_state.master_entities = []
+                st.session_state.master_relations = []
+                st.session_state.analyzed_files = []
+                st.session_state.html_data = ""
+
+                # 物理清空本地隐藏历史文件夹
+                if os.path.exists(HISTORY_DIR):
+                    for fname in os.listdir(HISTORY_DIR):
+                        fpath = os.path.join(HISTORY_DIR, fname)
+                        if os.path.isfile(fpath):
+                            try:
+                                os.remove(fpath)
+                            except:
+                                pass
+
+                # 状态复位并刷新
+                st.session_state.project_loaded_success = False
+                st.session_state.show_new_confirm = False
+                st.rerun()
+
+        with col_n:
+            if st.button("取消", use_container_width=True):
+                st.session_state.show_new_confirm = False
+                st.rerun()
+
+
+    # ====================================================================
+    # 📥 3. 导入记忆库 (使用【动态 Key 轮转技术】实现载入成功后组件自我销毁清空)
+    # ====================================================================
+    # 1. 初始化一个动态 key 存储在 session_state 中
+    if "project_uploader_key" not in st.session_state:
+        st.session_state.project_uploader_key = "project_uploader_init"
+
+    # 2. 将这个动态 key 绑定到上传组件上
+    uploaded_project = st.file_uploader(
+        "📥 载入历史工程文件 (.biokg / .json)",
+        type=["biokg", "json"],
+        key=st.session_state.project_uploader_key  # 🔗 绑定动态 Key
+    )
+
+    if uploaded_project is not None:
+        try:
+            loaded_data = json.load(uploaded_project)
+
+            # 增加一个确认按钮，防止用户误传文件直接覆盖当前进度
+            if st.button("🚀 确认载入该工程", type="primary", use_container_width=True):
+                # 将存档数据恢复到内存
+                st.session_state.master_entities = loaded_data.get("entities", [])
+                st.session_state.master_relations = loaded_data.get("relations", [])
+                st.session_state.analyzed_files = loaded_data.get("analyzed_files", [])
+
+                # 💡 核心逻辑：载入数据后，直接在后台重新画图
+                from back_logic import GraphVisualizer
+
+                visualizer = GraphVisualizer()
+                html_file = ".bio_knowledge_graph.html"
+
+                if os.path.exists(html_file):
+                    os.remove(html_file)
+
+                visualizer.generate_html(
+                    st.session_state.master_entities,
+                    st.session_state.master_relations,
+                    output_file=html_file
+                )
+
+                # 将重新画好的 HTML 塞回前端
+                if os.path.exists(html_file):
+                    with open(html_file, "r", encoding="utf-8") as f:
+                        st.session_state.html_data = f.read()
+
+                # ✨【致命漏点修复】：强行打开前端结果渲染开关！
+                # 只有把它设为 True，页面刷新后下方的 components.html 渲染区才会被激活执行！
+                st.session_state.show_results = True
+
+                # 🔥【核心修复点】：确认载入成功后，利用 uuid 生成一个全新的 Key！
+                # 这会强制让 Streamlit 在下一步 st.rerun() 刷新页面时，把上传框重置为最初始的空白状态！
+                st.session_state.project_uploader_key = f"project_uploader_{uuid.uuid4().hex}"
+
+                # 强行刷新页面，让右栏立刻渲染出刚刚载入的图谱，同时上传框瞬间清空！
+                st.rerun()
+        except Exception as e:
+            st.error(f"解析工程文件失败，请检查文件格式是否正确。报错信息: {e}")
 
 # ==========================================
 # 核心引擎触发与结果渲染区（全览画布排版）
@@ -357,12 +474,6 @@ if uploaded_file and start_button:
                     output_file=html_file
                 )
 
-                visualizer.generate_html(
-                    st.session_state.master_entities,
-                    st.session_state.master_relations,
-                    output_file=html_file
-                )
-
             # 🟢 阶段四：所有处理完成，将结果存入全局保险箱
             if os.path.exists(html_file):
                 st.success("🎉 图谱生成与数据融合成功！")
@@ -414,3 +525,28 @@ if st.session_state.show_results and st.session_state.html_data:
 
     # 🛡️ 渲染图谱
     components.html(st.session_state.html_data, height=800, scrolling=True)
+
+# ==========================================
+# 💡 核心修复 2：在所有解析逻辑跑完后，如果有数据，就用真按钮替换假按钮
+# ==========================================
+# 🛡️ 增加门卫：只有当记忆库里真的有实体数据时，才执行替换！
+if len(st.session_state.master_entities) > 0:
+    with export_placeholder:
+        project_data = {
+            "version": "1.0",
+            "entities": st.session_state.master_entities,
+            "relations": st.session_state.master_relations,
+            "analyzed_files": st.session_state.analyzed_files
+        }
+        json_bytes = json.dumps(project_data, ensure_ascii=False).encode('utf-8')
+
+        # 使用真正的下载按钮覆盖那个假按钮
+        # ⚠️ 这里最好加上 key="real_export_btn"，与假按钮彻底区分
+        st.download_button(
+            label="📤 导出工程 (.biokg)",
+            data=json_bytes,
+            file_name="我的图谱工程.biokg",
+            mime="application/json",
+            use_container_width=True,
+            key="real_export_btn"
+        )
