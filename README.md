@@ -95,10 +95,39 @@
 ## 🚀 快速开始
 1. 克隆仓库与安装依赖
 
+```text
+git clone https://github.com/24238-T-34/-Bio-Graph-Agent-Hy3-
+cd -Bio-Graph-Agent-Hy3-
+pip install -r requirements.txt
+```
+
+---
+
 2. 配置并运行项目
+
+方法一（Linux/WSL）
+
+装载仓库后运行
+```text
+chmod +x run.sh
+./run.sh
+```
+
+方法二（Windows)
+
+点击批处理文件 start.bat
+
+*项目路径可能有误，必要时劳请手动修改
+
+方法三
+
+运行
+
 ```text
 streamlit run app.py
 ```
+
+---
 
 运行后在浏览器中打开 Streamlit 界面，在侧边栏填入您的 OpenRouter / 腾讯混元 API Key，即可开始上传 PDF 文献，见证动态生物大图谱的自动构建！
 
