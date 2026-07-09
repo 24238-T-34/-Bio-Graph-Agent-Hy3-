@@ -16,6 +16,9 @@ import pandas as pd
 st.set_page_config(page_title="Bio-Graph Agent", page_icon="🧬", layout="wide")
 st.title("🧬 混元 Hy3 生物知识图谱自动生成引擎")
 st.markdown("---")
+# 📁 创建一个持久化文件夹，用来保存所有分析过的原文
+HISTORY_DIR = ".history_docs"
+os.makedirs(HISTORY_DIR, exist_ok=True)
 
 # 初始化全局图谱记忆中枢
 if "master_entities" not in st.session_state:
@@ -27,6 +30,11 @@ if "show_results" not in st.session_state:
 if "html_data" not in st.session_state:
     st.session_state.html_data = ""
 
+# 📝 初始化历史文献列表
+if "analyzed_files" not in st.session_state:
+    st.session_state.analyzed_files = []
+
+append_mode = True
 # ==========================================
 # 侧边栏配置：核心 API 和模型选择
 # ==========================================
@@ -43,6 +51,8 @@ with st.sidebar:
     }
     selected_model_name = st.selectbox("🧠 选择底层驱动模型", list(model_options.keys()))
     selected_model_id = model_options[selected_model_name]
+
+#    st.markdown("---")
 
 # ==========================================
 # 主界面：全新的左右双栏平衡布局
@@ -88,7 +98,7 @@ with left_col:
         if append_mode and len(st.session_state.master_entities) > 0:
             st.info(f"📦 记忆库就绪：当前已有 {len(st.session_state.master_entities)} 个节点。新知识将与之融合！")
         elif not append_mode and len(st.session_state.master_entities) > 0:
-            st.warning("⚠️ 注意：关闭追加模式，将会【清空】现有图谱，从零开始！")
+            st.warning("⚠️ 注意：关闭追加模式，将会【清空】现有图谱，从零开始！历史文献也会清空")
 
         # 🔥 智能页码联动：开启摘要模式默认只切 1-2 页；关闭则默认加载全文
         default_end = min(2, total_pages) if is_summary_only else total_pages
@@ -98,7 +108,9 @@ with left_col:
         with col_inputs1:
             start_page = st.number_input("起始页码", min_value=1, max_value=total_pages, value=1)
         with col_inputs2:
-            end_page = st.number_input("结束页码", min_value=start_page, max_value=total_pages, value=default_end)
+            # 🛡️ 修复：使用 max() 确保默认值永远不会低于起始页，完美避开 Streamlit 报错陷阱
+            safe_default_end = max(start_page, default_end)
+            end_page = st.number_input("结束页码", min_value=start_page, max_value=total_pages, value=safe_default_end)
 
         # 摘要模式下的安全阈值温柔提示
         if is_summary_only and (end_page - start_page > 2):
@@ -107,6 +119,61 @@ with left_col:
         st.divider()
         # 核心启动按钮：移至左侧最下方，拉宽加大，极其醒目
         start_button = st.button("🚀 开始解析 & 生成图谱", use_container_width=True, type="primary")
+
+# ==========================================
+# 📁 后置侧边栏扩展区（安全视觉展现）
+# ==========================================
+# ==========================================
+# 💡 新增：历史文献状态前置更新（解决侧边栏显示滞后问题）
+# ==========================================
+if uploaded_file and start_button:
+    if append_mode:
+        # 🟢 追加模式：将新文件安全落地
+        save_path = os.path.join(HISTORY_DIR, uploaded_file.name)
+        with open(save_path, "wb") as f:
+            f.write(uploaded_file.getbuffer())
+
+        if uploaded_file.name not in st.session_state.analyzed_files:
+            st.session_state.analyzed_files.append(uploaded_file.name)
+    else:
+        # 💥 非追加模式：只有用户确定按下了“开始解析”，才真正执行物理清空！
+        st.session_state.analyzed_files = []
+        if os.path.exists(HISTORY_DIR):
+            for fname in os.listdir(HISTORY_DIR):
+                fpath = os.path.join(HISTORY_DIR, fname)
+                if os.path.isfile(fpath):
+                    try:
+                        os.remove(fpath)
+                    except:
+                        pass
+
+
+# ==========================================
+# 📁 后置侧边栏扩展区（安全视觉展现）
+# ==========================================
+with st.sidebar:
+    # 💡 只有开启追加模式时，才在侧边栏展示历史文献库
+    if append_mode:
+        st.markdown("---")
+        st.header("📚 历史分析文献")
+
+        if not st.session_state.analyzed_files:
+            st.info("暂无已分析的文献")
+        else:
+            for fname in st.session_state.analyzed_files:
+                fpath = os.path.join(HISTORY_DIR, fname)
+                if os.path.exists(fpath):
+                    with open(fpath, "rb") as f:
+                        file_bytes = f.read()
+                    st.download_button(
+                        label=f"📄 {fname}",
+                        data=file_bytes,
+                        file_name=fname,
+                        mime="application/pdf",
+                        key=f"history_{fname}",
+                        use_container_width=True
+                    )
+
 
 # --- 右侧高清预览栏 ---
 with right_col:
@@ -149,6 +216,7 @@ with right_col:
                     st.info("起止页相同，无需重复展示。")
     else:
         st.info("👈 请先在左侧上传 PDF 文献以激活边界预览。")
+
 
 # ==========================================
 # 核心引擎触发与结果渲染区（全览画布排版）
@@ -277,7 +345,18 @@ if uploaded_file and start_button:
             # 🟢 阶段三：独立的渲染转圈
             with st.spinner("🎨 正在生成网络拓扑交互图谱..."):
                 visualizer = GraphVisualizer()
-                html_file = "bio_knowledge_graph.html"
+                html_file = ".bio_knowledge_graph.html"
+
+                # 🛡️ 破除幻觉机制：生成前强制删掉旧文件！
+                if os.path.exists(html_file):
+                    os.remove(html_file)
+
+                visualizer.generate_html(
+                    st.session_state.master_entities,
+                    st.session_state.master_relations,
+                    output_file=html_file
+                )
+
                 visualizer.generate_html(
                     st.session_state.master_entities,
                     st.session_state.master_relations,
