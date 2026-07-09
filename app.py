@@ -95,6 +95,14 @@ with left_col:
 
         append_mode = st.toggle("🔗 追加模式 (将本次提取结果叠加到现有图谱)", value=True)
 
+        st.markdown("#### 🌐 实体命名规范")
+        entity_language = st.radio(
+            "强制统一图谱主节点（实体）的输出语言：",
+            options=["关闭 (保持原文语言)", "中文 (强制翻译为中文)", "English (强制翻译为英文)"],
+            index=0,
+            horizontal=True
+        )
+
         # 智能提示：告诉用户当前库里有没有东西
         if append_mode and len(st.session_state.master_entities) > 0:
             st.info(f"📦 记忆库就绪：当前已有 {len(st.session_state.master_entities)} 个节点。新知识将与之融合！")
@@ -359,7 +367,8 @@ if uploaded_file and start_button:
                     end_page=end_page,
                     is_summary_only=is_summary_only,
                     use_reflection=use_reflection,
-                    source_name=uploaded_file.name
+                    source_name=uploaded_file.name,
+                    entity_lang = entity_language
                 )
 
             # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)

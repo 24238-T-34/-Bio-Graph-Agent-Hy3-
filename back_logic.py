@@ -45,7 +45,7 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献"):
+    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)"):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
         current_source = os.path.basename(pdf_path)
@@ -110,7 +110,7 @@ class BioGraphPipeline:
         for idx, chunk in enumerate(chunks):
             print(f"\n🧠 [Pipeline] 正在处理第 {idx + 1}/{len(chunks)} 个文本块...")
 
-            chunk_entities = self.agent.extract_entities_with_reflection(chunk,use_reflection=use_reflection)
+            chunk_entities = self.agent.extract_entities_with_reflection(chunk,use_reflection=use_reflection,entity_lang=entity_lang)
             self._merge_entities(chunk_entities)
 
             for ent in chunk_entities:
