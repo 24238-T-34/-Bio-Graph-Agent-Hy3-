@@ -1064,7 +1064,7 @@ if st.session_state.show_results and st.session_state.html_data:
         # 🚀 优化 1：使用带记忆锁的 Radio 导航替代失忆的 st.tabs
         ai_nav = st.radio(
             "选择 AI 模块：",
-            ["🧹 智能洗树 (Pruning)", "🔍 智能拓展 (Smart Expansion)"],
+            ["🧹 智能洗树 (Pruning)", "🔍 智能拓展 (Smart Expansion)","🔗 智能桥接 (Bridging)"],
             horizontal=True,
             label_visibility="collapsed",
             key="ai_nav_radio"  # 🔗 专属记忆密钥，任何刷新都不会丢失当前标签
@@ -1564,4 +1564,253 @@ if st.session_state.show_results and st.session_state.html_data:
                         if st.button("🧹 清理队列与搜索结果", type="primary"):
                             st.session_state.expansion_queue = []
                             st.session_state.pubmed_search_results = []
+                            st.rerun()
+
+        # -----------------------------------------
+        # 模块三：🔗 智能桥接 (Intelligent Bridging)
+        # -----------------------------------------
+        elif ai_nav == "🔗 智能桥接 (Bridging)":
+            st.info("💡 选中两个靶点/疾病，AI 将在图谱中寻找它们之间的所有多步通路，并推导深层分子机制。如果是孤岛，可一键呼叫 AI 联网挖掘！")
+
+            all_node_names = [e.get("standard_name") for e in st.session_state.master_entities]
+
+            col_a, col_b = st.columns(2)
+            with col_a:
+                node_a = st.selectbox("🎯 起点实体 (Node A):", options=all_node_names, key="bridge_node_a")
+            with col_b:
+                node_b = st.selectbox("🎯 终点实体 (Node B):", options=all_node_names, key="bridge_node_b")
+
+            max_depth = st.slider("🛤️ 最大探索深度 (Max Hops限制，防噪音)", min_value=2, max_value=5, value=4)
+
+            if st.button("🚀 启动跨文献机制桥接与推导", type="primary", use_container_width=True):
+                if node_a == node_b:
+                    st.warning("⚠️ 起点和终点不能是同一个节点！")
+                elif not node_a or not node_b:
+                    st.warning("⚠️ 请先在上方选择节点！")
+                else:
+                    from back_logic import GraphMiner
+
+                    with st.spinner("🔍 正在执行图论算法，扫描全图拓扑路径..."):
+                        # 1. 呼叫图谱矿工，无视方向找路
+                        paths = GraphMiner.find_paths(st.session_state.master_relations, node_a, node_b,
+                                                      max_depth)
+                        st.session_state.bridge_paths = paths
+                        st.session_state.bridge_nodes = (node_a, node_b)
+                        st.session_state.bridge_report = None  # 重置报告缓存
+                        st.rerun()
+
+            # --- 状态机：展示桥接结果与三挡分流 ---
+            if "bridge_paths" in st.session_state and st.session_state.get("bridge_nodes") == (node_a, node_b):
+                paths = st.session_state.bridge_paths
+
+                # 🌿 分流三：毫无联系（孤岛）
+                if len(paths) == 0:
+                    st.warning(f"🕳️ **图谱孤岛**：在当前最高 {max_depth} 步的限制下，【{node_a}】和【{node_b}】之间毫无关联。")
+                    needs_network_search = True
+                    search_prompt_msg = f"呼叫 AI 联网挖掘【{node_a}】与【{node_b}】的潜在机制"
+
+                else:
+                    max_path_len = max(len(p) for p in paths)
+
+                    # 🌿 分流二：只有直接联系
+                    if max_path_len == 1:
+                        st.info(f"⚡ **直接相关**：当前图谱仅发现【{node_a}】和【{node_b}】的表面直接联系。似乎缺乏中间介导物（如通路蛋白）的解释。")
+                        needs_network_search = True
+                        search_prompt_msg = f"呼叫 AI 联网挖掘【{node_a}】与【{node_b}】的深层中间通路"
+
+                    # 🌿 分流一：存在多步复杂机制
+                    else:
+                        st.success(f"🧬 发现 {len(paths)} 条跨越节点的复杂机制路径！")
+                        needs_network_search = False
+
+                        # 生成 AI 机制报告
+                        if st.session_state.bridge_report is None:
+                            current_api_key = api_key.strip()
+                            if not current_api_key:
+                                st.error("❌ 请先在侧边栏配置 API Key 以启用 AI 总结。")
+                            else:
+                                with st.spinner("🧠 资深 AI 学者正在阅读证据碎片，撰写跨文献机制报告..."):
+                                    from LLM_SYS import BioBrainAgent
+
+                                    agent = BioBrainAgent(api_key=current_api_key)
+                                    report = agent.explain_mechanism(node_a, node_b, paths)
+                                    st.session_state.bridge_report = report
+                                    st.rerun()
+
+                        if st.session_state.bridge_report:
+                            st.markdown("### 📑 AI 跨文献机制推导报告")
+                            st.markdown(f"> *起点: {node_a} | 终点: {node_b} | 基于本地图谱 {len(paths)} 条拓扑路径*")
+                            st.markdown(st.session_state.bridge_report)
+
+                # --- 动态联网检索模块 (针对分流二和三) ---
+                if needs_network_search:
+                    # 按钮1：仅触发在线检索文献列表
+                    if st.button(f"🌐 {search_prompt_msg}", type="primary", key="btn_bridge_search"):
+                        current_api_key = api_key.strip()
+                        if not current_api_key:
+                            st.error("❌ 请配置 API Key。")
+                        else:
+                            with st.spinner("🧠 AI 正在评估并生成专属检索策略..."):
+                                from LLM_SYS import BioBrainAgent
+                                from WebSearcher import PubMedSearcher
+
+                                agent = BioBrainAgent(api_key=current_api_key)
+                                query = agent.generate_bridge_query(node_a, node_b)
+
+                                if "[NO_RELATION_ERROR]" in query:
+                                    st.error(
+                                        f"🛑 **AI 驳回请求**：根据现有生命科学常识，【{node_a}】和【{node_b}】之间没有合理的生物学机制交集。")
+                                else:
+                                    st.info(f"💡 **检索策略**: `{query}`")
+                                    searcher = PubMedSearcher()
+                                    results = searcher.search_articles(query, max_results=6)  # 搜前6篇
+
+                                    if not results:
+                                        st.warning("⚠️ PubMed 中未检索到相关机制文献。")
+                                    else:
+                                        # 👈 将搜索到的文献元数据临时存入桥接专属缓存，重置下游状态
+                                        st.session_state.bridge_found_docs = results
+                                        st.session_state.pending_bridge_data = None
+                                        st.rerun()
+
+                # --- 核心改进：专属文献筛选表格 (让用户过滤噪音) ---
+                if "bridge_found_docs" in st.session_state and st.session_state.bridge_found_docs:
+                    st.markdown("---")
+                    st.markdown(f"### 🔎 联网检索结果：关于【{node_a}】与【{node_b}】的关系文献")
+                    st.caption("💡 请勾选你认为真正相关的文献，AI 将只下载并精读这些文献的摘要来拼接机制。")
+
+                    # 转换为表格供勾选
+                    b_df = pd.DataFrame(st.session_state.bridge_found_docs)
+                    if "Select" not in b_df.columns:
+                        b_df.insert(0, "Select", True)  # 默认全选，方便用户直接点下一步
+
+                    edited_b_df = st.data_editor(
+                        b_df,
+                        column_config={
+                            "Select": st.column_config.CheckboxColumn("精读", default=True),
+                            "pmid": "PMID",
+                            "title": "文献标题",
+                            "pub_date": "发表日期"
+                        },
+                        disabled=["pmid", "title", "pub_date"],
+                        hide_index=True,
+                        key="bridge_docs_editor",
+                        use_container_width=True
+                    )
+
+                    # 按钮2：基于勾选的文献真正启动 AI 精读和机制提取
+                    if st.button("🧬 对已勾选文献启动【狙击式机制提取】", type="primary", use_container_width=True):
+                        selected_b_docs = edited_b_df[edited_b_df["Select"] == True]
+                        if selected_b_docs.empty:
+                            st.warning("⚠️ 请至少勾选一篇文献供 AI 阅读！")
+                        else:
+                            with st.spinner("📚 正在后台秒传摘要并进行跨文献机制缝合..."):
+                                from WebSearcher import PubMedSearcher
+                                from LLM_SYS import BioBrainAgent
+
+                                searcher = PubMedSearcher()
+                                agent = BioBrainAgent(api_key=api_key.strip())
+
+                                combined_abstracts = ""
+                                # 只遍历用户勾选的 PMID
+                                for _, row in selected_b_docs.iterrows():
+                                    pmid = row['pmid']
+                                    abs_text = searcher.fetch_abstract(pmid)
+                                    if len(abs_text) > 50:
+                                        combined_abstracts += f"\n\n--- 文献 PMID: {pmid} (Title: {row['title']}) ---\n{abs_text}"
+
+                                # 呼叫大模型专属狙击提取
+                                bridge_result = agent.extract_bridge_mechanism(node_a, node_b,
+                                                                               combined_abstracts)
+                                st.session_state.pending_bridge_data = bridge_result
+                                st.session_state.bridge_found_docs = None  # 清空文献选择框，进入下一阶段
+                                st.rerun()
+
+                # --- 最终阶段：桥接结果展示与图谱融合审批区 ---
+                if "pending_bridge_data" in st.session_state and st.session_state.pending_bridge_data:
+                    bridge_data = st.session_state.pending_bridge_data
+
+                    st.markdown("---")
+                    st.markdown("### 💡 AI 联网桥接机制报告 (等待审批)")
+                    st.info(bridge_data.get("explanation", "无文本解释"))
+
+                    new_rels = bridge_data.get("relations", [])
+                    new_ents = bridge_data.get("entities", [])
+
+                    if not new_rels:
+                        st.warning("🕵️‍♂️ 虽然阅读了你指定的文献，但 AI 未能提取到明确连接这俩靶点的可靠微观机制链。")
+                        if st.button("清空报告"):
+                            st.session_state.pending_bridge_data = None
+                            st.rerun()
+                    else:
+                        st.success(f"🧩 成功提取到 {len(new_rels)} 条专属机制链路。是否将其并入主图谱？")
+                        st.json(new_rels)
+
+                        col_acc, col_rej = st.columns(2)
+                        if col_acc.button("✅ 认可并完美融入主图谱", type="primary", use_container_width=True):
+                            with st.spinner("正在执行防弹级融合..."):
+                                from LLM_SYS import BioBrainAgent
+
+                                agent = BioBrainAgent(api_key=api_key.strip())
+
+                                alignment_map = agent.align_global_entities(
+                                    st.session_state.master_entities, new_ents)
+
+                                for new_ent in new_ents:
+                                    if new_ent["standard_name"] not in [e["standard_name"] for e in
+                                                                        st.session_state.master_entities]:
+                                        st.session_state.master_entities.append(new_ent)
+
+                                if alignment_map:
+                                    for rel in new_rels:
+                                        if rel.get("source") in alignment_map: rel["source"] = \
+                                        alignment_map[rel["source"]]
+                                        if rel.get("target") in alignment_map: rel["target"] = \
+                                        alignment_map[rel["target"]]
+
+                                master_rel_map = {}
+                                for existing_rel in st.session_state.master_relations:
+                                    key = (str(existing_rel.get("source")).strip(),
+                                           str(existing_rel.get("target")).strip(),
+                                           str(existing_rel.get("relation")).strip())
+                                    master_rel_map[key] = existing_rel
+
+                                for rel in new_rels:
+                                    key = (str(rel.get("source")).strip(), str(rel.get("target")).strip(),
+                                           str(rel.get("relation")).strip())
+                                    if key in master_rel_map:
+                                        existing_rel = master_rel_map[key]
+                                        existing_rel["weight"] = existing_rel.get("weight", 1) + 1
+                                        if rel.get("evidence") and rel.get(
+                                                "evidence") not in existing_rel.get("evidence", ""):
+                                            existing_rel[
+                                                "evidence"] = f"{existing_rel.get('evidence', '')}\n---\n{rel.get('evidence')}"
+                                    else:
+                                        rel["weight"] = 1
+                                        st.session_state.master_relations.append(rel)
+
+                                # ==========================================
+                                # 🌟 核心补丁：自动降级原有的表面联系为“捷径”
+                                # ==========================================
+                                # 遍历主图谱，只要发现起点和终点刚好是我们桥接的 node_a 和 node_b，直接降级！
+                                for existing_rel in st.session_state.master_relations:
+                                    src = existing_rel.get("source", "").strip()
+                                    tgt = existing_rel.get("target", "").strip()
+
+                                    # 考虑到生物学方向，双向都要检查
+                                    if (src == node_a and tgt == node_b) or (src == node_b and tgt == node_a):
+                                        # 如果它还不是捷径，我们就给它打上标记
+                                        if not existing_rel.get("is_shortcut", False):
+                                            existing_rel["is_shortcut"] = True
+                                            # 贴心地在理由里留个脚印，方便以后追溯
+                                            old_reason = existing_rel.get("reason", "")
+                                            existing_rel["reason"] = f"[智能桥接自动降级：已挖掘出深层通路] {old_reason}"
+
+                            st.session_state.pending_bridge_data = None
+                            st.toast("✅ 桥接机制已成功融合！图谱已生长！", icon="🎉")
+                            redraw_and_update()
+                            st.rerun()
+
+                        if col_rej.button("❌ 感觉不对，放弃并清空", use_container_width=True):
+                            st.session_state.pending_bridge_data = None
                             st.rerun()

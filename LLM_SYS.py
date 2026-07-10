@@ -334,3 +334,88 @@ class BioBrainAgent:
 
         print(f"🎯 [Agent] 生成的检索式: {query}")
         return query
+
+    def explain_mechanism(self, node_a, node_b, paths_data):
+        """
+        分支一专用：根据图谱中找到的多步路径，推导深层机制
+        """
+        system_prompt = """你是一个顶级的分子生物学家和系统生物学专家。
+        用户将提供从现有知识图谱中提取的，连接【起点实体】和【终点实体】的多条拓扑路径及对应的文献证据碎片。
+        你的任务是：仔细阅读这些跨文献的证据碎片，将它们串联起来，进行全局视角的生物学逻辑推导，生成一份专业的【跨文献分子机制桥接报告】。
+
+        报告结构要求：
+        1. 🌟 【桥接通路总览】：用文本箭头（例如 A ─[激活]▶ C ─[抑制]▶ B）直观展现发现的 1~2 条最核心机制通路。
+        2. 🔬 【机制深度剖析】：结合提供的 evidence（证据原句），详细解释起点如何通过中间节点一步步影响到终点。
+        3. 🛡️ 【可信度与审计】：必须明确引用路径数据中的 doc_source（文献来源）。
+        4. 💡 【新发现暗示】：如果有明显的跨文献拼图（例如文献1证明A调控C，文献2证明C调控B），请特别高亮指出这可能是一个具有研究价值的串联新机制。
+
+        全程使用优美的 Markdown 格式输出。
+        """
+        user_content = f"起点实体：{node_a}\n终点实体：{node_b}\n\n【提取到的拓扑路径与证据碎片】：\n{json.dumps(paths_data, ensure_ascii=False)}"
+
+        print(f"🧠 [Agent] 正在推导 {node_a} 与 {node_b} 的深层机制...")
+        return self._ask_llm(system_prompt, user_content)
+
+    def generate_bridge_query(self, node_a, node_b):
+        """
+        分支二/三专用：生成强调“机制/通路”的检索式，自带防幻觉强制报错。
+        """
+        system_prompt = """你是一个顶尖的生物学专家与 PubMed 检索策略师。
+        用户在知识图谱中发现【实体A】和【实体B】之间缺乏深层机制通路，希望你构造检索式去网络上挖掘。
+
+        【🛡️ 核心强制规则】：
+        1. 逻辑审核：首先利用你的科学常识判断这两个实体是否可能存在生物学/医学上的关联。如果它们在科学上绝对毫无关联（例如一个是"苹果"，一个是"黑洞"），你必须仅输出纯文本：[NO_RELATION_ERROR]。
+        2. 策略构造：如果可能存在关联，请构造一个高度专业的 PubMed 布尔检索式。
+        3. 必须侧重机制：检索式不仅要包含实体 A 和 B（考虑它们的同义词），还必须强行加入机制探索词（如 mechanism, pathway, mediate, interact, cross-talk 等），以确保搜出来的是机制研究论文，而不是泛泛而谈的水文。
+        4. ⚠️ 严禁输出任何解释性文本或 Markdown 代码块！只能输出纯粹的检索式字符串，或者 [NO_RELATION_ERROR]。
+        """
+        user_content = f"实体A：{node_a}\n实体B：{node_b}"
+
+        print(f"🧠 [Agent] 正在思考 {node_a} 与 {node_b} 的机制探索策略...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+        query = self._clean_json_string(raw_response)
+
+        print(f"🎯 [Agent] 桥接检索策略: {query}")
+        return query
+
+    def extract_bridge_mechanism(self, node_a, node_b, abstracts_text):
+        """
+        专门用于【智能桥接】模块：阅读多篇文献摘要，狙击式提取只与 A 和 B 联系相关的实体与关系。
+        返回包含解释文本和图谱元素的字典。
+        """
+        system_prompt = """你是一个顶尖的分子生物学机制挖掘专家。
+        用户将提供【实体A】和【实体B】，以及从 PubMed 检索到的【多篇相关文献摘要】。
+        你的任务是：专门寻找并提取连接 A 和 B 的深层调控机制或中间通路。
+        ⚠️ 核心警告：请彻底忽略与连接这两个实体无关的其他背景知识、旁支靶点！
+
+        请严格按照以下 JSON 格式返回数据：
+        {
+            "explanation": "在这里写一段连贯的文本报告（支持Markdown）：综合这些文献，解释 A 是如何通过哪些中间介导物影响 B 的。如果没有找到任何确切证据，请在此说明。",
+            "entities": [
+                {"standard_name": "实体名", "aliases": ["别名1", "别名2"]}
+            ],
+            "relations": [
+                {
+                    "source": "主语",
+                    "target": "宾语",
+                    "relation": "关系动词(如 激活, 抑制, 磷酸化)",
+                    "evidence": "从文献中摘抄的证明原句",
+                    "reason": "你对这条调控逻辑的简短解释",
+                    "doc_source": "对应的 PMID 或文献标题"
+                }
+            ]
+        }
+        注意：entities 中必须包含你找出的所有关键中间节点，以及 A 和 B 本身。如果没有找到桥接关系，entities 和 relations 请返回空列表 []。
+        """
+        user_content = f"【实体A】：{node_a}\n【实体B】：{node_b}\n\n【供分析的文献摘要合集】：\n{abstracts_text}"
+
+        print(f"🧠 [Agent] 正在狙击式阅读文献，挖掘 {node_a} 与 {node_b} 的专属桥接机制...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+
+        try:
+            cleaned_json = self._clean_json_string(raw_response)
+            result = json.loads(cleaned_json)
+            return result
+        except Exception as e:
+            print(f"❌ [Agent] 桥接机制 JSON 解析失败: {e}")
+            return {"explanation": "解析大模型返回结果失败，请重试。", "entities": [], "relations": []}

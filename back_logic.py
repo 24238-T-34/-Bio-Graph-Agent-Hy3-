@@ -1,7 +1,7 @@
 from LLM_SYS import BioBrainAgent
 from IO_SYS import GraphVisualizer,PDFProcessor
 import os
-
+import collections
 
 # =====================================================================
 # 4. 系统总调度管道（核心：增量式累加记忆）
@@ -131,6 +131,68 @@ class BioGraphPipeline:
         # self.visualizer.generate_html(self.global_entities, self.global_relations)
         return self.global_entities, self.global_relations
 
+
+# =====================================================================
+# 🧠 图谱挖掘引擎：负责在已有知识图谱中寻找拓扑路径
+# =====================================================================
+class GraphMiner:
+    @staticmethod
+    def find_paths(relations, start_node, end_node, max_depth=4, exclude_shortcuts=True):
+        """
+        无向图 BFS（广度优先搜索）算法：寻找两个节点之间的所有路径
+        :param relations: 全局关系字典列表
+        :param start_node: 起点名称
+        :param end_node: 终点名称
+        :param max_depth: 最大搜索深度
+        :param exclude_shortcuts: 💡 是否屏蔽被洗树功能降级的捷径边（默认 True，逼迫算法寻找深层机制）
+        :return: list of paths
+        """
+        # 1. 构建双向邻接表 (Adjacency List)
+        adj = collections.defaultdict(list)
+        for rel in relations:
+            # 🛡️ 核心屏蔽网：如果是捷径边，直接当它不存在！
+            if exclude_shortcuts and rel.get("is_shortcut", False):
+                continue
+
+            src = rel.get("source", "").strip()
+            tgt = rel.get("target", "").strip()
+            if not src or not tgt:
+                continue
+
+            # 正向边
+            adj[src].append((tgt, rel))
+            # 反向边 (无向化处理)
+            adj[tgt].append((src, rel))
+
+        # 2. 广度优先搜索 (BFS) 寻找所有路径
+        queue = collections.deque([(start_node, [], {start_node})])
+        valid_paths = []
+
+        while queue:
+            current, path, visited = queue.popleft()
+
+            # 触达终点，保存路径
+            if current == end_node and len(path) > 0:
+                valid_paths.append(path)
+                continue
+
+            # 超过最大步数限制，不再往下钻取
+            if len(path) >= max_depth:
+                continue
+
+            # 遍历当前节点的所有邻居
+            for neighbor, edge in adj[current]:
+                if neighbor not in visited:
+                    new_visited = set(visited)
+                    new_visited.add(neighbor)
+                    new_path = list(path)
+                    new_path.append(edge)
+
+                    queue.append((neighbor, new_path, new_visited))
+
+        # 3. 按路径长度（步数）从小到大排序返回
+        valid_paths.sort(key=len)
+        return valid_paths
 
 # =====================================================================
 # ⚙️ 启动入口

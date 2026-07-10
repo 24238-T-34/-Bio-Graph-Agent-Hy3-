@@ -30,3 +30,5 @@ __pycache__/
 .env
 
 lib/
+.history_docs/
+.expanded_logs/
