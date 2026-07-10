@@ -85,6 +85,7 @@
 ├── back_logic.py     # 系统总调度管道（BioGraphPipeline 增量累加中枢）
 ├── LLM_SYS.py       # 大模型智能体（包含初审、反思、跨文献别名增强对齐 Agent）
 ├── IO_SYS.py        # 基础设施层（包含 PyMuPDF 智能切块与安全图谱拓扑渲染器）
+├── WebSearcher.py   #网上文献搜索功能
 ├── requirements.txt # 项目依赖
 └── .gitignore       # Git 提交忽略配置
 ```

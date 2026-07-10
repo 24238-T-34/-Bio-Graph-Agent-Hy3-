@@ -138,7 +138,7 @@ class BioBrainAgent:
         请提取出这些实体之间的相互作用。
         
         规则：
-        1. 只能提取三种关系："正作用"、"负作用"、"相关"。
+        1. 只能提取四种关系："正作用"、"负作用"、"相关"、"包含" (注："包含"用于表示宏观与微观、整体与部分、分类层级的从属关系)。
         2. 你的输出中，"source" 和 "target" 必须严格使用字典中提供的【standard_name】！不要使用文中的原词或别名，从而保证图谱节点的统一。
         3. 只输出合法 JSON 数组格式。格式如下：
         [
@@ -296,4 +296,41 @@ class BioBrainAgent:
             print(f"   ❌ [AI Cleaner] 诊断失败: {e}")
             return []
 
+    def generate_pubmed_query(self, nodes_info, context_relations=None):
+        """
+        根据用户选择的节点及其本地别名生成 PubMed 检索式。
+        如果传入了 context_relations，大模型将进行深度背景理解。
+        """
+        if context_relations:
+            # 🌐 模式 3：背景搜索 (结合图谱现有关系)
+            system_prompt = """你是一个顶级的计算生物学与文献检索专家。
+            用户将提供他们希望检索的【核心实体】，以及这些实体在当前图谱中的【已有关系网络（背景上下文）】。
+            你的任务是：深刻理解这些背景逻辑，为这些实体构建一个高度专业的 PubMed 布尔检索式（Boolean Query）。
 
+            策略要求：
+            1. 既然已知了部分关系，你的检索式应当倾向于探索“更深层的机制”、“未知的中间桥梁”或“具体的临床表型”。
+            2. 可以根据上下文推断，自行加入一到两个关键的机制词（如 pathway, mechanism, phosphorylation, inhibitor 等）作为 AND 条件，以缩小范围，提高文献质量。
+            3. 同一个实体的标准名称与别名之间用 OR 连接，实体组之间用 AND 连接。必须带上 [Title/Abstract] 或 [Mesh] 标签。
+            4. ⚠️ 严禁输出任何解释性文本或 Markdown 格式。只能输出纯粹的检索式字符串！
+            """
+            user_content = f"【希望拓展的核心实体】：\n{json.dumps(nodes_info, ensure_ascii=False)}\n\n【已知图谱上下文】：\n{json.dumps(context_relations, ensure_ascii=False)}"
+        else:
+            # 🧠 模式 2：智能搜索 (仅扩充同义词)
+            system_prompt = """你是一个顶级的生物医学文献检索专家。
+            用户将提供几个他们希望在 PubMed 中检索的核心生物学实体（包含标准名称和已知别名）。
+            你的任务是：为这些实体构建一个高度专业的 PubMed 布尔检索式（Boolean Query）。
+
+            规则：
+            1. 不同的实体之间必须用 AND 连接。同一个实体的标准名与别名之间用 OR 连接。
+            2. 必须在词汇后加上合适的检索字段标签，例如 [Title/Abstract] 或 [Mesh]。
+            3. 根据医学常识，自行补充常见且重要的英文同义词到 OR 逻辑中。
+            4. ⚠️ 严禁输出任何解释性文本或 Markdown 格式。只能输出纯粹的检索式字符串！
+            """
+            user_content = f"请为以下选中的实体生成 PubMed 检索式：\n{json.dumps(nodes_info, ensure_ascii=False)}"
+
+        print(f"🧠 [Agent] 正在生成 PubMed 检索策略 (背景模式: {bool(context_relations)})...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+        query = self._clean_json_string(raw_response)
+
+        print(f"🎯 [Agent] 生成的检索式: {query}")
+        return query

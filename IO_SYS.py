@@ -1,9 +1,9 @@
 import os
 import webbrowser
-import PyPDF2
+import pypdf
 from pyvis.network import Network
 import re
-from PyPDF2 import PdfReader
+from pypdf import PdfReader
 
 # =====================================================================
 # 1. PDF 处理器类
@@ -161,9 +161,7 @@ class GraphVisualizer:
             # 2. 强制洗净前端传来的 show_shortcuts
             safe_show = (str(show_shortcuts).lower() == "true") or (show_shortcuts is True)
 
-            # 3. 打印终端日志，帮你瞬间定位数据到底传没传过来
-            if is_shortcut:
-                print(f"🔍 [Debug] 捕获捷径线: {source} ➔ {target} | 当前前端开关状态: {safe_show}")
+
 
             # 拦截逻辑（使用洗净后的安全变量）
             if is_shortcut and not safe_show:

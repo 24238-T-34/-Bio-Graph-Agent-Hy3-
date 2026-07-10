@@ -30,6 +30,8 @@ if "show_results" not in st.session_state:
     st.session_state.show_results = False
 if "html_data" not in st.session_state:
     st.session_state.html_data = ""
+if "pubmed_search_results" not in st.session_state:
+    st.session_state.pubmed_search_results = []
 
 # 📝 初始化历史文献列表
 if "analyzed_files" not in st.session_state:
@@ -88,27 +90,28 @@ with left_col:
         st.info(f"📄 成功读取 PDF 文件，总计 **{total_pages}** 页。")
         st.divider()
 
-        st.subheader("⚙️ 2. 提取模式设置")
-        # 🔥 全新进阶功能：可开关的“仅摘要模式”
-        is_summary_only = st.toggle("⚡ 仅提取摘要模式 (速度极快)", value=False)
-        use_reflection = st.toggle("🔍 启用自我反思纠错 (提高准确率，但更耗时)", value=True)
+    st.subheader("⚙️ 2. 提取模式设置")
+    # 🔥 全新进阶功能：可开关的“仅摘要模式”
+    is_summary_only = st.toggle("⚡ 仅提取摘要模式 (速度极快)", value=False)
+    use_reflection = st.toggle("🔍 启用自我反思纠错 (提高准确率，但更耗时)", value=True)
 
-        append_mode = st.toggle("🔗 追加模式 (将本次提取结果叠加到现有图谱)", value=True)
+    append_mode = st.toggle("🔗 追加模式 (将本次提取结果叠加到现有图谱)", value=True)
 
-        st.markdown("#### 🌐 实体命名规范")
-        entity_language = st.radio(
-            "强制统一图谱主节点（实体）的输出语言：",
-            options=["关闭 (保持原文语言)", "中文 (强制翻译为中文)", "English (强制翻译为英文)"],
-            index=0,
-            horizontal=True
-        )
+    st.markdown("#### 🌐 实体命名规范")
+    entity_language = st.radio(
+        "强制统一图谱主节点（实体）的输出语言：",
+        options=["关闭 (保持原文语言)", "中文 (强制翻译为中文)", "English (强制翻译为英文)"],
+        index=0,
+        horizontal=True
+    )
 
-        # 智能提示：告诉用户当前库里有没有东西
-        if append_mode and len(st.session_state.master_entities) > 0:
-            st.info(f"📦 记忆库就绪：当前已有 {len(st.session_state.master_entities)} 个节点。新知识将与之融合！")
-        elif not append_mode and len(st.session_state.master_entities) > 0:
-            st.warning("⚠️ 注意：关闭追加模式，将会【清空】现有图谱，从零开始！历史文献也会清空")
+    # 智能提示：告诉用户当前库里有没有东西
+    if append_mode and len(st.session_state.master_entities) > 0:
+        st.info(f"📦 记忆库就绪：当前已有 {len(st.session_state.master_entities)} 个节点。新知识将与之融合！")
+    elif not append_mode and len(st.session_state.master_entities) > 0:
+        st.warning("⚠️ 注意：关闭追加模式，将会【清空】现有图谱，从零开始！历史文献也会清空")
 
+    if uploaded_file:
         # 🔥 智能页码联动：开启摘要模式默认只切 1-2 页；关闭则默认加载全文
         default_end = min(2, total_pages) if is_summary_only else total_pages
 
@@ -566,7 +569,6 @@ if st.session_state.show_results and st.session_state.html_data:
         )
     with disp_col2:
         st.caption("✨ ")
-    st.markdown("---")
 
 
 
@@ -1049,6 +1051,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                         st.toast("✅ 新关系建立成功！", icon="🎉")
                                         redraw_and_update()
                                         st.rerun()
+
     # ==========================================
     # 🤖 AI 智能图谱清洗中心 (真机驱动版)
     # ==========================================
@@ -1056,32 +1059,40 @@ if st.session_state.show_results and st.session_state.html_data:
 
     if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
         st.markdown("---")
-        st.subheader("🤖 AI 智能图谱清洗 (专家级)")
-        st.info("基于大模型的上下文理解，自动发现并处理图谱中的：同义词冗余、宏观与微观层级关系、以及机制捷径边。")
+        st.subheader("🤖 AI 智能图谱工具")
 
-        ai_tab_prune, ai_tab_future = st.tabs(["🧹 智能洗树 (Pruning)", "✨ 未来功能预留"])
+        # 🚀 优化 1：使用带记忆锁的 Radio 导航替代失忆的 st.tabs
+        ai_nav = st.radio(
+            "选择 AI 模块：",
+            ["🧹 智能洗树 (Pruning)", "🔍 智能拓展 (Smart Expansion)"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="ai_nav_radio"  # 🔗 专属记忆密钥，任何刷新都不会丢失当前标签
+        )
+        st.markdown("---")
 
-        with ai_tab_prune:
+        # -----------------------------------------
+        # 模块一：智能洗树 (Pruning)
+        # -----------------------------------------
+        if ai_nav == "🧹 智能洗树 (Pruning)":
+            # 🚀 优化 2：调整优先级，将专属业务提示下沉到本栏目最上方，排版更优雅
+            st.info("💡 核心功能：基于大模型的上下文理解，自动发现并处理图谱中的同义词冗余、宏观与微观层级关系、以及机制捷径边。")
             st.write("点击下方按钮，将当前图谱的拓扑结构与文献证据发送给大模型进行诊断。")
 
             col_btn, col_toggle = st.columns([1, 1])
             with col_btn:
                 if st.button("🚀 开始 AI 智能诊断图谱", type="primary", use_container_width=True):
-                    # 💡 核心修复：在这里获取全局的 API Key（假设你的输入框把它存到了 session_state 或者获取全局变量）
-                    # 请根据你实际侧边栏存储 key 的变量名进行替换，比如 st.session_state.api_key
                     current_api_key = api_key.strip()
 
-                    # 🛑 拦截没有填写 API Key 的白嫖/疏忽行为
+                    # 🛑 拦截没有填写 API Key 的行为
                     if not current_api_key:
                         st.error("❌ 拦截：系统检测到您未填写 API Key！AI 图谱清洗需要调用大模型，请先在侧边栏配置密钥。")
-                        st.stop()  # 强制中断后面的代码执行
+                        st.stop()
 
                     with st.spinner("🧠 大模型正在深度阅读文献证据并梳理图谱拓扑... (请耐心等待)"):
                         from LLM_SYS import BioBrainAgent
 
-                        agent = BioBrainAgent(api_key=current_api_key)  # 传入经过验证的 key
-
-                        # 真实呼叫大模型！
+                        agent = BioBrainAgent(api_key=current_api_key)
                         suggestions = agent.diagnose_graph(st.session_state.master_entities,
                                                            st.session_state.master_relations)
 
@@ -1089,6 +1100,9 @@ if st.session_state.show_results and st.session_state.html_data:
                         st.toast("✅ 大模型诊断完成！", icon="🤖")
                         st.rerun()
 
+            with col_toggle:
+                # 💡 优化 3：抛弃上一轮残留的旧 st.toggle 开关，统一改为文字提示
+                st.info("💡 诊断完成后，请直接在上方【图谱显示控制面板】灵活开启或关闭捷径边的显示。")
 
             # -----------------------------------------
             # 📋 渲染真实的审查清单并执行
@@ -1143,7 +1157,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                 st.session_state.master_entities = [e for e in st.session_state.master_entities if
                                                                     e.get("standard_name") not in removes]
 
-                            # 2. 执行建立层级 (💡 核心优化：吸收旧的相关线，继承证据)
+                            # 2. 执行建立层级
                             elif act["action"] == "HIERARCHY":
                                 parent = act.get("parent")
                                 child = act.get("child")
@@ -1151,19 +1165,16 @@ if st.session_state.show_results and st.session_state.html_data:
                                 merged_evidence = "AI 智能逻辑推导"
                                 merged_doc_source = "AI 分析"
 
-                                # 倒序遍历关系表，寻找他们之间是否已经存在“相关”连线
                                 for i in range(len(st.session_state.master_relations) - 1, -1, -1):
                                     r = st.session_state.master_relations[i]
                                     is_match = ((r.get("source") == parent and r.get("target") == child) or
                                                 (r.get("source") == child and r.get("target") == parent))
 
-                                    # 如果找到“相关”线，提取它的原文献和证据，并将其从图谱中彻底删除
                                     if is_match and r.get("relation") == "相关":
                                         merged_evidence = r.get("evidence", merged_evidence)
                                         merged_doc_source = r.get("doc_source", merged_doc_source)
                                         st.session_state.master_relations.pop(i)
 
-                                        # 新建“包含”线，并注入继承来的证据
                                 st.session_state.master_relations.append({
                                     "source": parent,
                                     "target": child,
@@ -1173,15 +1184,15 @@ if st.session_state.show_results and st.session_state.html_data:
                                     "doc_source": merged_doc_source
                                 })
 
-                            # 3. 执行彻底删除 (💡 新增：应对越级的父子关系)
+                            # 3. 执行彻底删除
                             elif act["action"] == "REMOVE":
                                 src = act.get("source")
                                 tgt = act.get("target")
                                 rel = act.get("relation")
-                                # 倒序遍历以安全删除匹配的连线
                                 for i in range(len(st.session_state.master_relations) - 1, -1, -1):
                                     r = st.session_state.master_relations[i]
-                                    if r.get("source") == src and r.get("target") == tgt and r.get("relation") == rel:
+                                    if r.get("source") == src and r.get("target") == tgt and r.get(
+                                            "relation") == rel:
                                         st.session_state.master_relations.pop(i)
 
                             # 4. 执行降级捷径边
@@ -1191,7 +1202,366 @@ if st.session_state.show_results and st.session_state.html_data:
                                             "target") and r.get("relation") == act.get("relation"):
                                         r["is_shortcut"] = True
 
+                        # ====================================================
+                        # 🧹 洗树后的终极清理：全局关系去重与融合
+                        # (因为合并同义词后，原本不重复的连线会发生重叠，必须重新融合并加粗权重)
+                        # ====================================================
+                        cleaned_relations = []
+                        master_rel_map = {}
+
+                        for existing_rel in st.session_state.master_relations:
+                            src = str(existing_rel.get("source", "")).strip()
+                            tgt = str(existing_rel.get("target", "")).strip()
+                            rel_type = str(existing_rel.get("relation", "")).strip()
+                            key = (src, tgt, rel_type)
+
+                            if key in master_rel_map:
+                                merged_rel = master_rel_map[key]
+
+                                # 1. 累加权重 (图谱连线变粗)
+                                merged_rel["weight"] = merged_rel.get("weight", 1) + existing_rel.get(
+                                    "weight", 1)
+
+                                # 2. 合并证据
+                                old_ev = merged_rel.get("evidence", "")
+                                new_ev = existing_rel.get("evidence", "")
+                                if new_ev and new_ev not in old_ev:
+                                    merged_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+                                # 3. 合并文献来源
+                                old_src = merged_rel.get("doc_source", "")
+                                new_src = existing_rel.get("doc_source", "")
+                                if new_src and new_src not in old_src:
+                                    merged_rel["doc_source"] = f"{old_src} | {new_src}"
+
+                                # 4. 合并解释
+                                old_reason = merged_rel.get("reason", "")
+                                new_reason = existing_rel.get("reason", "")
+                                if new_reason and new_reason not in old_reason:
+                                    merged_rel["reason"] = f"{old_reason} | {new_reason}"
+                            else:
+                                existing_rel["source"] = src
+                                existing_rel["target"] = tgt
+                                existing_rel["relation"] = rel_type
+                                master_rel_map[key] = existing_rel
+                                cleaned_relations.append(existing_rel)
+
+                        st.session_state.master_relations = cleaned_relations
+                        # ====================================================
+
                         st.session_state.ai_suggestions = []  # 清空建议表
                         st.toast("✅ 优化已完美执行！", icon="🎉")
                         redraw_and_update()
+                        st.rerun()  # 🚀 优化 4：顺手在这里也加上手动 rerun()，让执行优化后的新图谱瞬间完美秒刷！
+
+        # -----------------------------------------
+        # -----------------------------------------
+        # 模块二：🔍 智能拓展 (Smart Expansion)
+        # -----------------------------------------
+        elif ai_nav == "🔍 智能拓展 (Smart Expansion)":
+            st.info("💡 选中图谱中的关键节点，系统将自动在 PubMed 中检索前沿文献，并由 AI 提取摘要知识，自动将其延伸至当前图谱。")
+
+            # 1. 交互区：选中图谱已有节点与策略配置
+            all_node_names = [e.get("standard_name") for e in st.session_state.master_entities]
+            selected_nodes = st.multiselect("🎯 请选择要拓展的核心节点 (建议 1-3 个):", all_node_names)
+
+            # 🚀 新增：三挡变速检索引擎
+            search_mode = st.radio(
+                "🧠 选择检索与拓展策略：",
+                options=[
+                    "⚡ 直接搜索 (速度极快，精准字符匹配)",
+                    "🧠 智能搜索 (AI 扩充同义词与 Mesh 主题词)",
+                    "🌐 背景搜索 (最强：AI 阅读图谱已知连线，智能发散机制)"
+                ],
+                horizontal=False
+            )
+            max_results = st.slider("📄 检索返回文献数量上限", min_value=5, max_value=20, value=10)
+
+            if st.button("🔍 联网搜索相关文献", type="primary"):
+                if not selected_nodes:
+                    st.warning("⚠️ 请先在上方选择至少一个节点！")
+                else:
+                    with st.spinner("🌐 正在生成策略并呼叫 PubMed API 获取最新文献..."):
+                        from WebSearcher import PubMedSearcher
+
+                        searcher = PubMedSearcher()
+                        query = ""
+
+                        # ⚡ 模式 1：纯 Python 暴力拼接（不调大模型）
+                        if "直接搜索" in search_mode:
+                            query_parts = [f'("{node}"[Title/Abstract])' for node in selected_nodes]
+                            query = " AND ".join(query_parts)
+                            st.session_state.last_generated_query = query
+
+                        # 🧠/🌐 模式 2 & 3：召唤大模型
+                        else:
+                            current_api_key = api_key.strip()
+                            if not current_api_key:
+                                st.error("❌ 拦截：请先在侧边栏配置 API Key 以启用 AI 搜索功能。")
+                                st.stop()
+
+                            from LLM_SYS import BioBrainAgent
+
+                            agent = BioBrainAgent(api_key=current_api_key)
+
+                            # 组装节点别名情报
+                            selected_nodes_info = []
+                            for e in st.session_state.master_entities:
+                                if e.get("standard_name") in selected_nodes:
+                                    selected_nodes_info.append({
+                                        "name": e.get("standard_name"),
+                                        "aliases": e.get("aliases", [])
+                                    })
+
+                            if "智能搜索" in search_mode:
+                                query = agent.generate_pubmed_query(selected_nodes_info)
+                            elif "背景搜索" in search_mode:
+                                # 💡 核心逻辑：找出图谱中与选中节点相关的所有“已知关系”
+                                relevant_relations = [r for r in st.session_state.master_relations
+                                                      if r.get("source") in selected_nodes or r.get(
+                                        "target") in selected_nodes]
+                                query = agent.generate_pubmed_query(selected_nodes_info,
+                                                                    context_relations=relevant_relations)
+
+                            st.session_state.last_generated_query = query
+
+                        # 统一执行 PubMed 搜索
+                        results = searcher.search_articles(query, max_results=max_results)
+                        st.session_state.pubmed_search_results = results
+                        st.toast(f"✅ 成功检索到 {len(results)} 篇相关文献！", icon="🎉")
                         st.rerun()
+
+            # 2. 勾选区：使用优雅的 st.data_editor 展示结果
+            if st.session_state.pubmed_search_results:
+                st.markdown("### 📑 检索结果 (请勾选需要深度分析的文献)")
+
+                # 转换成 DataFrame 并插入一列用于打勾
+                df = pd.DataFrame(st.session_state.pubmed_search_results)
+                if "Include" not in df.columns:
+                    df.insert(0, "Include", False)  # 默认都不勾选
+
+                # 渲染可交互表格
+                edited_df = st.data_editor(
+                    df,
+                    column_config={
+                        "Include": st.column_config.CheckboxColumn("✅ 引入图谱", default=False),
+                        "pmid": st.column_config.TextColumn("PMID", disabled=True),
+                        "title": st.column_config.TextColumn("文献标题", disabled=True),
+                        "year": st.column_config.TextColumn("年份", disabled=True),
+                    },
+                    disabled=["pmid", "title", "year", "authors", "doi"],  # 锁定文本列不让修改
+                    hide_index=True,
+                    use_container_width=True,
+                    key="pubmed_data_editor"
+                )
+
+                st.markdown("---")
+                # ==========================================
+                # 3. 熔接区：初始化队列
+                # ==========================================
+                if st.button("📥 将勾选文献加入解析队列", type="primary", use_container_width=True):
+                    selected_docs = edited_df[edited_df["Include"] == True]
+
+                    if selected_docs.empty:
+                        st.warning("⚠️ 请至少在表格中勾选一篇文献！")
+                    else:
+                        # 初始化任务队列状态
+                        st.session_state.expansion_queue = selected_docs.to_dict('records')
+                        st.session_state.expansion_idx = 0
+                        st.toast("✅ 已加入队列！请在下方控制台进行单步处理。", icon="📥")
+                        st.rerun()
+
+
+                # ==========================================
+                # 4. 队列逐篇解析控制台 (全新引入的状态机)
+                # ==========================================
+
+                # 🛠️ 修复核心：定义一个安全的回调函数，用于点击“终止”时提前重置状态
+                def bg_reset_expansion_task():
+                    st.session_state.expansion_queue = []
+                    st.session_state.expansion_idx = 0
+                    if "auto_run_expansion" in st.session_state:
+                        st.session_state.auto_run_expansion = False  # 在渲染前修改，100%安全！
+
+
+                if "expansion_queue" in st.session_state and st.session_state.expansion_queue:
+                    queue = st.session_state.expansion_queue
+                    idx = st.session_state.expansion_idx
+                    total = len(queue)
+
+                    st.markdown("---")
+                    st.markdown(f"### ⚙️ 深度融合任务队列 (进度: {idx}/{total})")
+
+                    if idx < total:
+                        current_doc = queue[idx]
+                        pmid = current_doc['pmid']
+                        title = current_doc['title']
+
+                        st.info(f"👉 **当前准备解析:**\n\n📄 {title}\n*(PMID: {pmid})*")
+
+                        # 🚀 无人值守的连续自动执行开关
+                        auto_run = st.toggle("🔁 开启连续自动解析 (无人值守模式)", value=False, key="auto_run_expansion")
+                        if auto_run:
+                            st.caption("⚠️ 自动巡航模式运行中... (若需中途强行中止，请点击页面右上角自带的 'Stop' 按钮)")
+
+                        # 三挡控制按钮
+                        col_run, col_skip, col_stop = st.columns(3)
+
+                        btn_run = col_run.button("▶️ 解析并融合本篇", use_container_width=True, type="primary",
+                                                 disabled=auto_run)
+                        btn_skip = col_skip.button("⏭️ 跳过这篇", use_container_width=True, disabled=auto_run)
+
+                        # 🛠️ 修复点 1：通过 on_click 绑定刚才写好的回调函数
+                        btn_stop = col_stop.button("🛑 终止任务并清空", use_container_width=True, disabled=auto_run,
+                                                   on_click=bg_reset_expansion_task)
+
+                        # 💡 触发逻辑：只要【点了运行按钮】或者【开启了自动开关】
+                        if btn_run or auto_run:
+                            current_api_key = api_key.strip()
+                            if not current_api_key:
+                                st.error("❌ 拦截：请先在侧边栏配置 API Key。")
+                                # 🛠️ 修复点 2：删掉这里强行修改 state 的报错代码。
+                                # 直接 st.stop() 即可！此时开关依然是开着的，页面会停在这里。
+                                # 带来的神级体验：用户在侧边栏补上 API Key 的瞬间，自动化引擎会自动检测并【继续无缝向下跑】，极其丝滑！
+                                st.stop()
+
+                            from WebSearcher import PubMedSearcher
+                            from LLM_SYS import BioBrainAgent
+                            import datetime
+                            import os
+
+                            searcher = PubMedSearcher()
+                            agent = BioBrainAgent(api_key=current_api_key)
+
+                            with st.spinner(f"⏳ 正在深度解析并提取 {pmid} 的知识..."):
+                                abstract = searcher.fetch_abstract(pmid)
+                                if len(abstract) < 50:
+                                    st.toast(f"文献 {pmid} 摘要为空或过短，已自动跳过。", icon="⏭️")
+                                else:
+                                    new_entities = agent.extract_entities_with_reflection(abstract,
+                                                                                          use_reflection=True)
+                                    for ent in new_entities:
+                                        ent["doc_source"] = f"PubMed:{pmid}"
+
+                                    combined_entities_dict = st.session_state.master_entities + new_entities
+                                    new_relations = agent.extract_relations(abstract, combined_entities_dict)
+                                    for rel in new_relations:
+                                        rel["doc_source"] = f"PubMed:{pmid}"
+                                        rel["weight"] = 1
+
+                                    alignment_map = agent.align_global_entities(
+                                        st.session_state.master_entities, new_entities)
+
+                                    aligned_new_entities = []
+                                    master_names = {ent["standard_name"]: ent for ent in
+                                                    st.session_state.master_entities}
+
+                                    for new_ent in new_entities:
+                                        new_name = new_ent.get("standard_name")
+                                        new_source = new_ent.get("doc_source", "")
+
+                                        if new_name in master_names:
+                                            master_ent = master_names[new_name]
+                                            aliases = master_ent.setdefault("aliases", [])
+                                            for new_alias in new_ent.get("aliases", []):
+                                                if new_alias not in aliases and new_alias != new_name:
+                                                    aliases.append(new_alias)
+                                            old_source = master_ent.get("doc_source", "")
+                                            if new_source and new_source not in old_source:
+                                                master_ent["doc_source"] = f"{old_source} | {new_source}"
+                                        elif alignment_map and new_name in alignment_map:
+                                            master_name = alignment_map[new_name]
+                                            if master_name in master_names:
+                                                master_ent = master_names[master_name]
+                                                aliases = master_ent.setdefault("aliases", [])
+                                                if new_name not in aliases:
+                                                    aliases.append(new_name)
+                                                for new_alias in new_ent.get("aliases", []):
+                                                    if new_alias not in aliases and new_alias != master_name:
+                                                        aliases.append(new_alias)
+                                                old_source = master_ent.get("doc_source", "")
+                                                if new_source and new_source not in old_source:
+                                                    master_ent["doc_source"] = f"{old_source} | {new_source}"
+                                            else:
+                                                aligned_new_entities.append(new_ent)
+                                        else:
+                                            aligned_new_entities.append(new_ent)
+
+                                    if alignment_map:
+                                        for rel in new_relations:
+                                            if rel.get("source") in alignment_map:
+                                                rel["source"] = alignment_map[rel["source"]]
+                                            if rel.get("target") in alignment_map:
+                                                rel["target"] = alignment_map[rel["target"]]
+
+                                    master_rel_map = {}
+                                    for existing_rel in st.session_state.master_relations:
+                                        src = str(existing_rel.get("source", "")).strip()
+                                        tgt = str(existing_rel.get("target", "")).strip()
+                                        rel_type = str(existing_rel.get("relation", "")).strip()
+                                        key = (src, tgt, rel_type)
+                                        master_rel_map[key] = existing_rel
+
+                                    for rel in new_relations:
+                                        src = str(rel.get("source", "")).strip()
+                                        tgt = str(rel.get("target", "")).strip()
+                                        rel_type = str(rel.get("relation", "")).strip()
+                                        key = (src, tgt, rel_type)
+
+                                        if key in master_rel_map:
+                                            existing_rel = master_rel_map[key]
+                                            existing_rel["weight"] = existing_rel.get("weight", 1) + 1
+
+                                            old_ev = existing_rel.get("evidence", "")
+                                            new_ev = rel.get("evidence", "")
+                                            if new_ev and new_ev not in old_ev:
+                                                existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+                                            old_src = existing_rel.get("doc_source", "")
+                                            new_src = rel.get("doc_source", "")
+                                            if new_src and new_src not in old_src:
+                                                existing_rel["doc_source"] = f"{old_src} | {new_src}"
+
+                                            old_reason = existing_rel.get("reason", "")
+                                            new_reason = rel.get("reason", "")
+                                            if new_reason and new_reason not in old_reason:
+                                                existing_rel["reason"] = f"{old_reason} | {new_reason}"
+                                        else:
+                                            rel["source"] = src
+                                            rel["target"] = tgt
+                                            rel["relation"] = rel_type
+                                            rel["weight"] = 1
+                                            st.session_state.master_relations.append(rel)
+                                            master_rel_map[key] = rel
+
+                                    st.session_state.master_entities.extend(aligned_new_entities)
+
+                                    log_dir = ".expanded_logs"
+                                    os.makedirs(log_dir, exist_ok=True)
+                                    log_file = os.path.join(log_dir, "expansion_history.txt")
+                                    with open(log_file, "a", encoding="utf-8") as f:
+                                        f.write(
+                                            f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}] PMID: {pmid} | Title: {title}\n")
+
+                            st.session_state.expansion_idx += 1
+                            st.toast(f"✅ 文献 {pmid} 融合成功！", icon="🎉")
+                            redraw_and_update()
+                            st.rerun()
+
+                        elif btn_skip:
+                            st.session_state.expansion_idx += 1
+                            st.rerun()
+
+                        # 🛠️ 修复点 3：删除了原先的 elif btn_stop 逻辑块，因为它的使命已经被回调函数安全地接管了
+
+                    else:
+                        st.success(f"✅ 队列中的 {total} 篇文献已全部处理完毕！图谱已是最新形态。")
+                        # 💡 提示：这里为什么没报错？因为当任务跑完进入 else 分支时，上面的 if 分支没进，
+                        # st.toggle 组件在当前运行中根本没有被实例化，所以在这里关闭开关是合法的！
+                        if "auto_run_expansion" in st.session_state and st.session_state.auto_run_expansion:
+                            st.session_state.auto_run_expansion = False
+
+                        if st.button("🧹 清理队列与搜索结果", type="primary"):
+                            st.session_state.expansion_queue = []
+                            st.session_state.pubmed_search_results = []
+                            st.rerun()
