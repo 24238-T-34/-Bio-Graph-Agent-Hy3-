@@ -259,5 +259,41 @@ class BioBrainAgent:
             print(f"    ⚠️ [Entity Aligner] 实体对齐解析失败，跳过融合: {e}")
             return {}
 
+    def diagnose_graph(self, entities, relations):
+        """🤖 核心引擎：AI 图谱智能洗树 (检测同义词、层级与捷径边)"""
+        if not entities or not relations:
+            return []
+
+        prompt = """你是一个顶级的生物医药知识图谱架构师。
+        我将提供一份当前图谱的【实体列表】和【关系连线列表】（包含起点、终点、关系类型和原文证据）。
+        请你根据原文证据进行“图谱洗树（Graph Pruning & Merging）”，并返回结构化的 JSON 操作指令。
+
+        你需要执行以下四种操作：
+        1. 【合并同义词 (MERGE)】：如果两个节点完全指代同一事物（如“尿路感染”与“泌尿系统感染”），请指令合并。
+        2. 【建立层级 (HIERARCHY)】：如果两个节点是包含/分类关系（如“大肠杆菌”是父，“UTI89”是子），请指令新增一条 `[包含]` 关系线。⚠️【机制并存规则】：如果某实体（如抗生素）既连着父节点又连着子节点，请保留这些机制连线！
+        3. 【彻底删除越级分类 (REMOVE)】：⚠️【多级嵌套规则】：如果存在三级以上的包含/从属关系（如 尿路感染包含膀胱炎，膀胱炎包含急性膀胱炎），请严格保证只建立相邻层级的联系。如果原图中存在**越级**的分类连线（如 急性膀胱炎与尿路感染之间的相关/属于关系），请务必指令将其【彻底删除】。
+        4. 【标记机制捷径边 (DOWNGRADE)】：针对“机制推导”产生的表象捷径边（A->B且B->C，导致的A->C），将其标记为捷径边进行视觉降级。
+
+        请严格只输出一个合法的 JSON 数组，格式如下（可返回多条指令）：
+        [
+          {"action": "MERGE", "target_node": "保留的标准实体", "nodes_to_remove": ["要删掉的冗余实体"], "reason": "说明"},
+          {"action": "HIERARCHY", "parent": "父节点名称", "child": "子节点名称", "reason": "说明"},
+          {"action": "REMOVE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "越级层级冗余，需彻底删除"},
+          {"action": "DOWNGRADE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "机制捷径降级"}
+        ]
+        绝对不要输出任何其他解释文字！
+        """
+
+        # 将当前的图谱数据喂给大模型
+        graph_data = f"【实体列表】:\n{json.dumps(entities, ensure_ascii=False)}\n\n【关系列表】:\n{json.dumps(relations, ensure_ascii=False)}"
+
+        try:
+            print("   └─ 🤖 [AI Cleaner] 正在进行图谱全局深度诊断...")
+            raw_response = self._ask_llm(prompt, graph_data)
+            clean_json = self._clean_json_string(raw_response)
+            return json.loads(clean_json)
+        except Exception as e:
+            print(f"   ❌ [AI Cleaner] 诊断失败: {e}")
+            return []
 
 

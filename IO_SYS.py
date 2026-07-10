@@ -87,7 +87,7 @@ class GraphVisualizer:
         self.bgcolor = bgcolor
         self.font_color = font_color
 
-    def generate_html(self, global_entities, global_relations, output_file="bio_knowledge_graph.html"):
+    def generate_html(self, global_entities, global_relations, output_file="bio_knowledge_graph.html",show_shortcuts=False):
         print(f"🎨 [GraphVisualizer] 正在绘制动态网络拓扑图...")
         from pyvis.network import Network
         from collections import Counter
@@ -136,20 +136,43 @@ class GraphVisualizer:
             net.add_node(std_name, label=std_name, title=node_title, color="#4da6ff", size=node_size)
 
         # ==========================================
-        # 3. 再绘制关系连线
+        # 3. 再绘制关系连线 (稳定强化版)
         # ==========================================
         for item in global_relations:
             source = item.get("source")
             target = item.get("target")
+
+            # 🛡️ 致命 Bug 修复：拦截自环线！
+            # 防止 AI 合并同义词后出现“自己连自己”的情况，从而彻底杜绝物理引擎内存溢出卡死
+            if source == target:
+                continue
+
             rel_type = item.get("relation", "相关")
             evidence = item.get("evidence", "无")
             doc_source = item.get("doc_source", "未知文献")
 
-            # 🌟 提取连线被提及的真实热度权重
+            # ==========================================
+            # 🛡️ 终极安全强转：应对各种前后端传参“玄学”
+            # ==========================================
+            # 1. 强制洗净 is_shortcut (无论传进来是字符串 "true", "True" 还是 bool True，统统转为纯粹的 True)
+            raw_shortcut = item.get("is_shortcut", False)
+            is_shortcut = (str(raw_shortcut).lower() == "true") or (raw_shortcut is True)
+
+            # 2. 强制洗净前端传来的 show_shortcuts
+            safe_show = (str(show_shortcuts).lower() == "true") or (show_shortcuts is True)
+
+            # 3. 打印终端日志，帮你瞬间定位数据到底传没传过来
+            if is_shortcut:
+                print(f"🔍 [Debug] 捕获捷径线: {source} ➔ {target} | 当前前端开关状态: {safe_show}")
+
+            # 拦截逻辑（使用洗净后的安全变量）
+            if is_shortcut and not safe_show:
+                continue
+
+            # 🌟 提取连线热度权重
             rel_weight = item.get("weight", 1)
 
             # 💡 核心视觉优化：加入缩放系数
-            # 设定基础粗细为 1，每次热度增加只变粗 0.5 (你可以自由把 0.5 调成 0.3 或 0.2)
             scale_factor = 0.5
             display_width = 1 + (rel_weight * scale_factor)
 
@@ -162,17 +185,37 @@ class GraphVisualizer:
 
             # 强化悬停提示框
             edge_title = f"🔥 证据热度: {rel_weight} 次提及\n🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
+            if is_shortcut:
+                edge_title = "⚠️ [AI 判定为机制捷径]\n" + edge_title
 
-            # 🌟 绝杀修改：把原来的 value 替换为受到公式严格控制的 width！
+            # ==========================================
+            # 🎨 视觉分支判断：颜色、虚线与箭头处理
+            # ==========================================
+            # 💡 如果是捷径，强制变成深灰色 (#555555) 和虚线 (dashes=True)
+            shortcut_color = "#555555"
+            force_dashed = True if is_shortcut else False
+
             if rel_type == "正作用":
-                net.add_edge(source, target, title=edge_title, color="#00ff00", arrows="to", width=display_width)
+                final_color = shortcut_color if is_shortcut else "#00ff00"
+                net.add_edge(source, target, title=edge_title, color=final_color, arrows="to",
+                             width=display_width, dashes=force_dashed)
+
             elif rel_type == "负作用":
-                # 负作用本身就是重点，让它的基础粗细稍微再多 1 个像素
-                net.add_edge(source, target, title=edge_title, color="#ff3333", arrows="to",
-                             width=display_width + 1)
+                final_color = shortcut_color if is_shortcut else "#ff3333"
+                net.add_edge(source, target, title=edge_title, color=final_color, arrows="to",
+                             width=display_width + 1, dashes=force_dashed)  # 负作用依然加粗
+
+            elif rel_type == "包含":
+                # 💡 新增：包含关系显示为高贵紫，并且带有标准箭头
+                final_color = shortcut_color if is_shortcut else "#9b59b6"
+                net.add_edge(source, target, title=edge_title, color=final_color, arrows="to",
+                             width=display_width, dashes=force_dashed)
+
             else:
-                net.add_edge(source, target, title=edge_title, color="#aaaaaa", dashes=True, width=display_width)
+                # 💡 修复：“相关”关系原本就是虚线，正常显示为浅灰色，且强行去除箭头 (arrows="")
+                final_color = shortcut_color if is_shortcut else "#aaaaaa"
+                net.add_edge(source, target, title=edge_title, color=final_color, arrows="",
+                             dashes=True, width=display_width)
 
         net.save_graph(output_file)
         print(f"✨ [GraphVisualizer] 拓扑图已成功保存至: {output_file}")
-

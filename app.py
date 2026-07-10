@@ -504,6 +504,29 @@ if uploaded_file and start_button:
 # ==========================================
 # 🌟 注意：下面这段代码必须完全没有缩进，贴紧最左侧！
 if st.session_state.show_results and st.session_state.html_data:
+
+    def redraw_and_update():
+        from back_logic import GraphVisualizer
+        import os
+        visualizer = GraphVisualizer()
+        html_file = ".bio_knowledge_graph.html"
+        if os.path.exists(html_file):
+            os.remove(html_file)
+
+        current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
+
+        visualizer.generate_html(
+            st.session_state.master_entities,
+            st.session_state.master_relations,
+            output_file=html_file,
+            show_shortcuts=current_show_shortcuts
+        )
+
+        if os.path.exists(html_file):
+            with open(html_file, "r", encoding="utf-8") as f:
+                st.session_state.html_data = f.read()
+
+
     st.markdown("### 📥 4. 知识图谱结果导出")
 
     entities_json = json.dumps(st.session_state.master_entities, ensure_ascii=False, indent=2)
@@ -531,6 +554,21 @@ if st.session_state.show_results and st.session_state.html_data:
                            use_container_width=True)
 
     st.markdown("---")
+
+    disp_col1, disp_col2 = st.columns(2)
+    with disp_col1:
+        # 使用 key="show_shortcuts_toggle" 赋予它永久记忆
+        # 使用 on_change=redraw_and_update 让它一被点击就瞬间重绘画布！
+        st.toggle(
+            "👁️ 显示机制捷径边",
+            key="show_shortcuts_toggle",
+            on_change=redraw_and_update
+        )
+    with disp_col2:
+        st.caption("✨ ")
+    st.markdown("---")
+
+
 
     # 🛡️ 渲染图谱 (原有代码，作为定位点)
     components.html(st.session_state.html_data, height=800, scrolling=True)
@@ -567,25 +605,6 @@ if st.session_state.show_results and st.session_state.html_data:
     if ENABLE_EDITOR and len(st.session_state.master_entities) > 0:
         st.subheader("🎛️ 图谱数据管理中心")
 
-
-        def redraw_and_update():
-            from back_logic import GraphVisualizer
-            import os
-            visualizer = GraphVisualizer()
-            html_file = ".bio_knowledge_graph.html"
-            if os.path.exists(html_file):
-                os.remove(html_file)
-            visualizer.generate_html(
-                st.session_state.master_entities,
-                st.session_state.master_relations,
-                output_file=html_file
-            )
-            if os.path.exists(html_file):
-                with open(html_file, "r", encoding="utf-8") as f:
-                    st.session_state.html_data = f.read()
-            st.rerun()
-
-
         # 🚀 终极架构修复：用带记忆的 Radio 替代失忆的 Tabs
         main_tab = st.radio(
             "选择管理模块：",
@@ -619,6 +638,7 @@ if st.session_state.show_results and st.session_state.html_data:
                     if old_count - len(st.session_state.master_entities) > 0:
                         st.toast(f"✅ 成功清理了 {old_count - len(st.session_state.master_entities)} 个孤立节点！", icon="🧹")
                         redraw_and_update()
+                        st.rerun()
                     else:
                         st.toast("当前图谱很健康，没有发现孤立节点。", icon="✨")
 
@@ -658,6 +678,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                     st.session_state.analyzed_files[idx] = new_src_clean
                                 st.toast(f"✅ 成功替换 '{old_source}'", icon="🎉")
                                 redraw_and_update()
+                                st.rerun()
 
             with col2:
                 st.markdown("#### ➕ 手动添加节点")
@@ -684,6 +705,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                 })
                                 st.toast("✅ 节点添加成功！", icon="🎉")
                                 redraw_and_update()
+                                st.rerun()
 
         # -----------------------------------------
         # 🎯 方向二：节点操作 (核心引擎)
@@ -732,6 +754,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                         target_ent["aliases"] = [a.strip() for a in new_aliases.split(",") if a.strip()]
                                         st.toast("✅ 节点修改成功！", icon="🎉")
                                         redraw_and_update()
+                                        st.rerun()
 
                         # -- 合并节点 --
                         elif action == "🧲 合并到...":
@@ -756,6 +779,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                                                     e.get("standard_name") != target_node_name]
                                 st.toast(f"✅ 成功合并入 {merge_target}！", icon="🎉")
                                 redraw_and_update()
+                                st.rerun()
 
                         # -- 节点拆分 (预留) --
                         elif action == "🔀 节点拆分":
@@ -861,6 +885,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                         st.session_state.master_relations = new_relations
                                         st.toast(f"✅ 节点已成功拆分为 {c_name_a} 和 {c_name_b}！", icon="🎉")
                                         redraw_and_update()
+                                        st.rerun()
 
                         # -- 彻底删除 --
                         elif action == "🗑️ 危险删除":
@@ -873,6 +898,7 @@ if st.session_state.show_results and st.session_state.html_data:
                                                                          "target") != target_node_name]
                                 st.toast("✅ 彻底清除！", icon="🗑️")
                                 redraw_and_update()
+                                st.rerun()
 
         # -----------------------------------------
         # 🎯 方向三：关系操作 (无向搜索，有向编辑，标准词汇版)
@@ -970,12 +996,14 @@ if st.session_state.show_results and st.session_state.html_data:
 
                                         st.toast("✅ 关系及方向修改成功！", icon="🎉")
                                         redraw_and_update()
+                                        st.rerun()
 
                                 st.markdown("---")
                                 if st.button("🚨 斩断 / 删除此连线", type="primary", use_container_width=True):
                                     st.session_state.master_relations.pop(rel_idx)
                                     st.toast("✅ 连线已彻底删除！", icon="✂️")
                                     redraw_and_update()
+                                    st.rerun()
 
                         # ==========================================
                         # 子功能 B：手动搭桥，安全新增
@@ -1020,3 +1048,150 @@ if st.session_state.show_results and st.session_state.html_data:
                                         })
                                         st.toast("✅ 新关系建立成功！", icon="🎉")
                                         redraw_and_update()
+                                        st.rerun()
+    # ==========================================
+    # 🤖 AI 智能图谱清洗中心 (真机驱动版)
+    # ==========================================
+    ENABLE_AI_CLEANER = True
+
+    if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
+        st.markdown("---")
+        st.subheader("🤖 AI 智能图谱清洗 (专家级)")
+        st.info("基于大模型的上下文理解，自动发现并处理图谱中的：同义词冗余、宏观与微观层级关系、以及机制捷径边。")
+
+        ai_tab_prune, ai_tab_future = st.tabs(["🧹 智能洗树 (Pruning)", "✨ 未来功能预留"])
+
+        with ai_tab_prune:
+            st.write("点击下方按钮，将当前图谱的拓扑结构与文献证据发送给大模型进行诊断。")
+
+            col_btn, col_toggle = st.columns([1, 1])
+            with col_btn:
+                if st.button("🚀 开始 AI 智能诊断图谱", type="primary", use_container_width=True):
+                    # 💡 核心修复：在这里获取全局的 API Key（假设你的输入框把它存到了 session_state 或者获取全局变量）
+                    # 请根据你实际侧边栏存储 key 的变量名进行替换，比如 st.session_state.api_key
+                    current_api_key = api_key.strip()
+
+                    # 🛑 拦截没有填写 API Key 的白嫖/疏忽行为
+                    if not current_api_key:
+                        st.error("❌ 拦截：系统检测到您未填写 API Key！AI 图谱清洗需要调用大模型，请先在侧边栏配置密钥。")
+                        st.stop()  # 强制中断后面的代码执行
+
+                    with st.spinner("🧠 大模型正在深度阅读文献证据并梳理图谱拓扑... (请耐心等待)"):
+                        from LLM_SYS import BioBrainAgent
+
+                        agent = BioBrainAgent(api_key=current_api_key)  # 传入经过验证的 key
+
+                        # 真实呼叫大模型！
+                        suggestions = agent.diagnose_graph(st.session_state.master_entities,
+                                                           st.session_state.master_relations)
+
+                        st.session_state.ai_suggestions = suggestions
+                        st.toast("✅ 大模型诊断完成！", icon="🤖")
+                        st.rerun()
+
+
+            # -----------------------------------------
+            # 📋 渲染真实的审查清单并执行
+            # -----------------------------------------
+            if hasattr(st.session_state, "ai_suggestions") and st.session_state.ai_suggestions:
+                st.markdown("### 📋 智能修改审查清单")
+
+                with st.form("ai_prune_review_form"):
+                    selected_actions = []
+
+                    for i, sug in enumerate(st.session_state.ai_suggestions):
+                        action = sug.get("action")
+                        reason = sug.get("reason", "未提供原因")
+
+                        if action == "MERGE":
+                            target = sug.get("target_node")
+                            removes = sug.get("nodes_to_remove", [])
+                            label = f"🧲 **合并同义词**: 将 `{removes}` 合并入 `{target}` (原因: {reason})"
+                        elif action == "HIERARCHY":
+                            parent = sug.get("parent")
+                            child = sug.get("child")
+                            label = f"🌳 **建立层级**: 建立 `{parent}` ─[包含]▶ `{child}` (原因: {reason})"
+                        elif action == "DOWNGRADE":
+                            src = sug.get("source")
+                            tgt = sug.get("target")
+                            rel = sug.get("relation")
+                            label = f"📉 **降级捷径边**: 将连线 `{src} ─[{rel}]▶ {tgt}` 降级为推导虚线 (原因: {reason})"
+                        elif action == "REMOVE":
+                            src = sug.get("source")
+                            tgt = sug.get("target")
+                            rel = sug.get("relation")
+                            label = f"✂️ **删除越级连线**: 彻底移除 `{src} ─[{rel}]▶ {tgt}` (原因: {reason})"
+                        else:
+                            continue
+
+                        # 渲染勾选框
+                        if st.checkbox(label, value=True, key=f"sug_{i}"):
+                            selected_actions.append(sug)
+
+                    st.markdown("---")
+                    if st.form_submit_button("💾 确认执行选中的优化", type="primary", use_container_width=True):
+
+                        # 核心执行引擎
+                        for act in selected_actions:
+                            # 1. 执行合并
+                            if act["action"] == "MERGE":
+                                target = act.get("target_node")
+                                removes = act.get("nodes_to_remove", [])
+                                for r in st.session_state.master_relations:
+                                    if r.get("source") in removes: r["source"] = target
+                                    if r.get("target") in removes: r["target"] = target
+                                st.session_state.master_entities = [e for e in st.session_state.master_entities if
+                                                                    e.get("standard_name") not in removes]
+
+                            # 2. 执行建立层级 (💡 核心优化：吸收旧的相关线，继承证据)
+                            elif act["action"] == "HIERARCHY":
+                                parent = act.get("parent")
+                                child = act.get("child")
+
+                                merged_evidence = "AI 智能逻辑推导"
+                                merged_doc_source = "AI 分析"
+
+                                # 倒序遍历关系表，寻找他们之间是否已经存在“相关”连线
+                                for i in range(len(st.session_state.master_relations) - 1, -1, -1):
+                                    r = st.session_state.master_relations[i]
+                                    is_match = ((r.get("source") == parent and r.get("target") == child) or
+                                                (r.get("source") == child and r.get("target") == parent))
+
+                                    # 如果找到“相关”线，提取它的原文献和证据，并将其从图谱中彻底删除
+                                    if is_match and r.get("relation") == "相关":
+                                        merged_evidence = r.get("evidence", merged_evidence)
+                                        merged_doc_source = r.get("doc_source", merged_doc_source)
+                                        st.session_state.master_relations.pop(i)
+
+                                        # 新建“包含”线，并注入继承来的证据
+                                st.session_state.master_relations.append({
+                                    "source": parent,
+                                    "target": child,
+                                    "relation": "包含",
+                                    "evidence": merged_evidence,
+                                    "reason": act.get("reason"),
+                                    "doc_source": merged_doc_source
+                                })
+
+                            # 3. 执行彻底删除 (💡 新增：应对越级的父子关系)
+                            elif act["action"] == "REMOVE":
+                                src = act.get("source")
+                                tgt = act.get("target")
+                                rel = act.get("relation")
+                                # 倒序遍历以安全删除匹配的连线
+                                for i in range(len(st.session_state.master_relations) - 1, -1, -1):
+                                    r = st.session_state.master_relations[i]
+                                    if r.get("source") == src and r.get("target") == tgt and r.get("relation") == rel:
+                                        st.session_state.master_relations.pop(i)
+
+                            # 4. 执行降级捷径边
+                            elif act["action"] == "DOWNGRADE":
+                                for r in st.session_state.master_relations:
+                                    if r.get("source") == act.get("source") and r.get("target") == act.get(
+                                            "target") and r.get("relation") == act.get("relation"):
+                                        r["is_shortcut"] = True
+
+                        st.session_state.ai_suggestions = []  # 清空建议表
+                        st.toast("✅ 优化已完美执行！", icon="🎉")
+                        redraw_and_update()
+                        st.rerun()
