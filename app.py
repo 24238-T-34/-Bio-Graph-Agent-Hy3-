@@ -532,30 +532,491 @@ if st.session_state.show_results and st.session_state.html_data:
 
     st.markdown("---")
 
-    # 🛡️ 渲染图谱
+    # 🛡️ 渲染图谱 (原有代码，作为定位点)
     components.html(st.session_state.html_data, height=800, scrolling=True)
 
-# ==========================================
-# 💡 核心修复 2：在所有解析逻辑跑完后，如果有数据，就用真按钮替换假按钮
-# ==========================================
-# 🛡️ 增加门卫：只有当记忆库里真的有实体数据时，才执行替换！
-if len(st.session_state.master_entities) > 0:
-    with export_placeholder:
-        project_data = {
-            "version": "1.0",
-            "entities": st.session_state.master_entities,
-            "relations": st.session_state.master_relations,
-            "analyzed_files": st.session_state.analyzed_files
-        }
-        json_bytes = json.dumps(project_data, ensure_ascii=False).encode('utf-8')
+    st.markdown("---")
 
-        # 使用真正的下载按钮覆盖那个假按钮
-        # ⚠️ 这里最好加上 key="real_export_btn"，与假按钮彻底区分
-        st.download_button(
-            label="📤 导出工程 (.biokg)",
-            data=json_bytes,
-            file_name="我的图谱工程.biokg",
-            mime="application/json",
-            use_container_width=True,
-            key="real_export_btn"
+    # ====================================================================
+    # 💡 核心位置：回填真实导出按钮 (放在 Tabs 前面防止 DOM 崩溃)
+    # ====================================================================
+    if len(st.session_state.master_entities) > 0:
+        with export_placeholder:
+            project_data = {
+                "version": "1.0",
+                "entities": st.session_state.master_entities,
+                "relations": st.session_state.master_relations,
+                "analyzed_files": st.session_state.analyzed_files
+            }
+            json_bytes = json.dumps(project_data, ensure_ascii=False).encode('utf-8')
+
+            st.download_button(
+                label="📤 导出工程 (.biokg)",
+                data=json_bytes,
+                file_name="我的图谱工程.biokg",
+                mime="application/json",
+                use_container_width=True,
+                key="real_export_btn"
+            )
+
+    # ==========================================
+    # 🎛️ 终极图谱数据管理中心
+    # ==========================================
+    ENABLE_EDITOR = True
+
+    if ENABLE_EDITOR and len(st.session_state.master_entities) > 0:
+        st.subheader("🎛️ 图谱数据管理中心")
+
+
+        def redraw_and_update():
+            from back_logic import GraphVisualizer
+            import os
+            visualizer = GraphVisualizer()
+            html_file = ".bio_knowledge_graph.html"
+            if os.path.exists(html_file):
+                os.remove(html_file)
+            visualizer.generate_html(
+                st.session_state.master_entities,
+                st.session_state.master_relations,
+                output_file=html_file
+            )
+            if os.path.exists(html_file):
+                with open(html_file, "r", encoding="utf-8") as f:
+                    st.session_state.html_data = f.read()
+            st.rerun()
+
+
+        # 🚀 终极架构修复：用带记忆的 Radio 替代失忆的 Tabs
+        main_tab = st.radio(
+            "选择管理模块：",
+            ["⚡ 快捷功能", "🎯 节点操作", "🔗 关系操作"],
+            horizontal=True,
+            label_visibility="collapsed",
+            key="main_nav_radio"  # 加上安全密钥防冲突
         )
+        st.markdown("---")
+
+        # -----------------------------------------
+        # 方向一：快捷功能
+        # -----------------------------------------
+        if main_tab == "⚡ 快捷功能":
+            col1, col2 = st.columns(2)
+
+            with col1:
+                st.markdown("#### 🧹 一键清理")
+                st.info("清理掉那些既不是起点、也不是终点的“孤立无援”的节点。")
+                if st.button("🗑️ 清除所有孤立节点", use_container_width=True):
+                    connected_nodes = set()
+                    for rel in st.session_state.master_relations:
+                        connected_nodes.add(rel.get("source"))
+                        connected_nodes.add(rel.get("target"))
+
+                    old_count = len(st.session_state.master_entities)
+                    st.session_state.master_entities = [
+                        ent for ent in st.session_state.master_entities
+                        if ent.get("standard_name") in connected_nodes
+                    ]
+                    if old_count - len(st.session_state.master_entities) > 0:
+                        st.toast(f"✅ 成功清理了 {old_count - len(st.session_state.master_entities)} 个孤立节点！", icon="🧹")
+                        redraw_and_update()
+                    else:
+                        st.toast("当前图谱很健康，没有发现孤立节点。", icon="✨")
+
+                st.markdown("#### 📝 批量修改文献/来源名")
+                all_sources = set()
+                for ent in st.session_state.master_entities:
+                    if "doc_source" in ent: all_sources.add(ent["doc_source"])
+                for rel in st.session_state.master_relations:
+                    if "doc_source" in rel: all_sources.add(rel["doc_source"])
+                if "analyzed_files" in st.session_state:
+                    for f in st.session_state.analyzed_files: all_sources.add(f)
+
+                all_sources = list(all_sources)
+
+                if not all_sources:
+                    st.info("当前图谱没有来源记录。")
+                else:
+                    with st.form("rename_source_form"):
+                        old_source = st.selectbox("选择要修改的文献/来源名", all_sources)
+                        new_source = st.text_input("输入新的名称 (如：Nature_2023_p53)")
+
+                        if st.form_submit_button("🔄 一键替换全图谱来源", type="primary", use_container_width=True):
+                            if not new_source.strip():
+                                st.error("❌ 新名称不能为空！")
+                            elif new_source.strip() != old_source:
+                                new_src_clean = new_source.strip()
+                                for ent in st.session_state.master_entities:
+                                    if ent.get("doc_source") == old_source: ent["doc_source"] = new_src_clean
+                                for rel in st.session_state.master_relations:
+                                    if rel.get("doc_source") == old_source:
+                                        rel["doc_source"] = new_src_clean
+                                        if "reason" in rel and old_source in rel["reason"]:
+                                            rel["reason"] = rel["reason"].replace(f"[源自: {old_source}]",
+                                                                                  f"[源自: {new_src_clean}]")
+                                if old_source in st.session_state.analyzed_files:
+                                    idx = st.session_state.analyzed_files.index(old_source)
+                                    st.session_state.analyzed_files[idx] = new_src_clean
+                                st.toast(f"✅ 成功替换 '{old_source}'", icon="🎉")
+                                redraw_and_update()
+
+            with col2:
+                st.markdown("#### ➕ 手动添加节点")
+                with st.form("manual_add_node_form"):
+                    new_node_name = st.text_input("输入新节点标准名 (必填)")
+                    new_node_aliases = st.text_input("输入别名 (选填，逗号分隔)")
+                    new_node_source = st.text_input("输入文献来源 (为空记为'手动添加')")
+
+                    if st.form_submit_button("💾 保存并添加节点", type="primary", use_container_width=True):
+                        if not new_node_name.strip():
+                            st.error("❌ 节点名称不能为空！")
+                        else:
+                            existing_names = [e.get("standard_name") for e in st.session_state.master_entities]
+                            if new_node_name.strip() in existing_names:
+                                st.warning("⚠️ 节点已经存在！")
+                            else:
+                                aliases_list = [a.strip() for a in
+                                                new_node_aliases.split(",")] if new_node_aliases.strip() else []
+                                final_source = new_node_source.strip() if new_node_source.strip() else "手动添加"
+                                st.session_state.master_entities.append({
+                                    "standard_name": new_node_name.strip(),
+                                    "aliases": aliases_list,
+                                    "doc_source": final_source
+                                })
+                                st.toast("✅ 节点添加成功！", icon="🎉")
+                                redraw_and_update()
+
+        # -----------------------------------------
+        # 🎯 方向二：节点操作 (核心引擎)
+        # -----------------------------------------
+        elif main_tab == "🎯 节点操作":
+            all_node_names = sorted([e.get("standard_name") for e in st.session_state.master_entities])
+
+            if not all_node_names:
+                st.info("当前图谱为空，无法操作。")
+            else:
+                target_node_name = st.selectbox("🔍 搜索并选择要操作的节点", ["-- 请选择 --"] + all_node_names)
+
+                if target_node_name != "-- 请选择 --":
+                    target_ent = next(
+                        (e for e in st.session_state.master_entities if e.get("standard_name") == target_node_name),
+                        None)
+
+                    if target_ent:
+                        st.markdown(f"### 当前选中: `{target_node_name}`")
+
+                        action = st.radio(
+                            "选择操作：",
+                            ["✏️ 修改信息", "🧲 合并到...", "🔀 节点拆分", "🗑️ 危险删除"],
+                            horizontal=True,
+                            label_visibility="collapsed",
+                            key="node_action_radio"  # 加上安全密钥防冲突
+                        )
+
+                        # -- 修改信息 --
+                        if action == "✏️ 修改信息":
+                            with st.form("edit_node_form"):
+                                new_name = st.text_input("新标准名", value=target_ent.get("standard_name"))
+                                current_aliases = ", ".join(target_ent.get("aliases", []))
+                                new_aliases = st.text_input("别名 (逗号分隔)", value=current_aliases)
+
+                                if st.form_submit_button("💾 保存修改", type="primary"):
+                                    clean_new_name = new_name.strip()
+                                    if clean_new_name:
+                                        if clean_new_name != target_node_name:
+                                            # 级联更新连线
+                                            for rel in st.session_state.master_relations:
+                                                if rel.get("source") == target_node_name: rel["source"] = clean_new_name
+                                                if rel.get("target") == target_node_name: rel["target"] = clean_new_name
+
+                                        target_ent["standard_name"] = clean_new_name
+                                        target_ent["aliases"] = [a.strip() for a in new_aliases.split(",") if a.strip()]
+                                        st.toast("✅ 节点修改成功！", icon="🎉")
+                                        redraw_and_update()
+
+                        # -- 合并节点 --
+                        elif action == "🧲 合并到...":
+                            st.info(f"将 `{target_node_name}` 的所有关系转移给另一个节点，随后销毁本体。")
+                            merge_target = st.selectbox("选择目标节点", [n for n in all_node_names if n != target_node_name])
+
+                            if st.button("🧲 确认合并", type="primary", use_container_width=True):
+                                # 转移连线
+                                for rel in st.session_state.master_relations:
+                                    if rel.get("source") == target_node_name: rel["source"] = merge_target
+                                    if rel.get("target") == target_node_name: rel["target"] = merge_target
+
+                                # 转移别名并去重
+                                dest_ent = next(e for e in st.session_state.master_entities if
+                                                e.get("standard_name") == merge_target)
+                                combined_aliases = set(
+                                    dest_ent.get("aliases", []) + target_ent.get("aliases", []) + [target_node_name])
+                                dest_ent["aliases"] = list(combined_aliases)
+
+                                # 销毁原节点
+                                st.session_state.master_entities = [e for e in st.session_state.master_entities if
+                                                                    e.get("standard_name") != target_node_name]
+                                st.toast(f"✅ 成功合并入 {merge_target}！", icon="🎉")
+                                redraw_and_update()
+
+                        # -- 节点拆分 (预留) --
+                        elif action == "🔀 节点拆分":
+                            st.info(f"将 `{target_node_name}` 拆分为两个独立节点，并重新分配它的关系连线。")
+
+                            # 1. 找出所有牵扯到该节点的关系连线
+                            related_rels = []
+                            for i, rel in enumerate(st.session_state.master_relations):
+                                if rel.get("source") == target_node_name or rel.get("target") == target_node_name:
+                                    related_rels.append((i, rel))
+
+                            with st.form("split_node_form"):
+                                st.markdown("##### 1. 定义拆分后的新节点")
+                                col_a, col_b = st.columns(2)
+                                with col_a:
+                                    name_a = st.text_input("新节点 A (如：mutant p53)", value=f"{target_node_name}_A")
+                                    aliases_a = st.text_input("节点 A 别名 (逗号分隔)",
+                                                              value=", ".join(target_ent.get("aliases", [])))
+                                with col_b:
+                                    name_b = st.text_input("新节点 B (如：wild-type p53)", value=f"{target_node_name}_B")
+                                    aliases_b = st.text_input("节点 B 别名 (逗号分隔)", value="")
+
+                                st.markdown("##### 2. 分配原有关系连线")
+                                rel_choices = {}
+                                if not related_rels:
+                                    st.caption("（该节点目前没有任何连线，无需分配）")
+                                else:
+                                    for idx, rel in related_rels:
+                                        # 构造直观的关系描述
+                                        src = rel.get("source")
+                                        tgt = rel.get("target")
+                                        rel_type = rel.get("relation", "关联")
+                                        display_text = f"**{src}** ─[{rel_type}]▶ **{tgt}**"
+
+                                        # 为每条连线生成一个独立的单选框
+                                        rel_choices[idx] = st.radio(
+                                            display_text,
+                                            options=["给 A", "给 B", "A 和 B 都要 (复制)", "丢弃该线"],
+                                            horizontal=True,
+                                            key=f"split_rel_{idx}"
+                                        )
+
+                                if st.form_submit_button("🔀 确认执行拆分", type="primary", use_container_width=True):
+                                    c_name_a = name_a.strip()
+                                    c_name_b = name_b.strip()
+
+                                    if not c_name_a or not c_name_b:
+                                        st.error("❌ 两个新节点的名称都不能为空！")
+                                    elif c_name_a == c_name_b:
+                                        st.error("❌ 新节点 A 和 B 不能同名！")
+                                    else:
+                                        import copy
+
+                                        # ---- 执行拆分逻辑 ----
+                                        # 1. 删掉旧实体，加入新实体 A 和 B
+                                        st.session_state.master_entities = [e for e in st.session_state.master_entities
+                                                                            if
+                                                                            e.get("standard_name") != target_node_name]
+
+                                        st.session_state.master_entities.append({
+                                            "standard_name": c_name_a,
+                                            "aliases": [x.strip() for x in aliases_a.split(",") if x.strip()],
+                                            "doc_source": target_ent.get("doc_source", "手动拆分")
+                                        })
+                                        st.session_state.master_entities.append({
+                                            "standard_name": c_name_b,
+                                            "aliases": [x.strip() for x in aliases_b.split(",") if x.strip()],
+                                            "doc_source": target_ent.get("doc_source", "手动拆分")
+                                        })
+
+                                        # 2. 遍历全局关系，进行重组
+                                        new_relations = []
+                                        for i, rel in enumerate(st.session_state.master_relations):
+                                            if i in rel_choices:
+                                                # 这是牵扯到旧节点的关系
+                                                choice = rel_choices[i]
+                                                if choice == "丢弃该线":
+                                                    continue  # 直接不要了
+
+                                                is_source = (rel.get("source") == target_node_name)
+                                                is_target = (rel.get("target") == target_node_name)
+
+
+                                                def make_rel(node_name):
+                                                    # 使用深拷贝防止内存污染
+                                                    new_r = copy.deepcopy(rel)
+                                                    if is_source: new_r["source"] = node_name
+                                                    if is_target: new_r["target"] = node_name
+                                                    return new_r
+
+
+                                                if choice == "给 A":
+                                                    new_relations.append(make_rel(c_name_a))
+                                                elif choice == "给 B":
+                                                    new_relations.append(make_rel(c_name_b))
+                                                elif choice == "A 和 B 都要 (复制)":
+                                                    new_relations.append(make_rel(c_name_a))
+                                                    new_relations.append(make_rel(c_name_b))
+                                            else:
+                                                # 跟这个节点无关的连线，原样保留
+                                                new_relations.append(rel)
+
+                                        st.session_state.master_relations = new_relations
+                                        st.toast(f"✅ 节点已成功拆分为 {c_name_a} 和 {c_name_b}！", icon="🎉")
+                                        redraw_and_update()
+
+                        # -- 彻底删除 --
+                        elif action == "🗑️ 危险删除":
+                            st.error(f"⚠️ 警告：删除 `{target_node_name}` 将同时拔除所有相关连线！")
+                            if st.button("🚨 确认彻底删除", type="primary", use_container_width=True):
+                                st.session_state.master_entities = [e for e in st.session_state.master_entities if
+                                                                    e.get("standard_name") != target_node_name]
+                                st.session_state.master_relations = [r for r in st.session_state.master_relations if
+                                                                     r.get("source") != target_node_name and r.get(
+                                                                         "target") != target_node_name]
+                                st.toast("✅ 彻底清除！", icon="🗑️")
+                                redraw_and_update()
+
+        # -----------------------------------------
+        # 🎯 方向三：关系操作 (无向搜索，有向编辑，标准词汇版)
+        # -----------------------------------------
+        elif main_tab == "🔗 关系操作":
+            all_node_names = sorted([e.get("standard_name") for e in st.session_state.master_entities])
+
+            # 💡 核心对齐：换成你的系统能够识别的三大标准关系！
+            SAFE_RELATIONS = ["正作用", "负作用", "相关"]
+
+            if not all_node_names:
+                st.info("当前图谱为空，请先添加节点。")
+            else:
+                st.markdown("### 🔍 搜索两个节点间的关联")
+                col_a, col_b = st.columns(2)
+                with col_a:
+                    node_a = st.selectbox("📍 选择节点 A", ["-- 请选择 --"] + all_node_names)
+                with col_b:
+                    node_b = st.selectbox("🎯 选择节点 B", ["-- 请选择 --"] + all_node_names)
+
+                if node_a != "-- 请选择 --" and node_b != "-- 请选择 --":
+                    if node_a == node_b:
+                        st.warning("⚠️ 节点 A 和节点 B 不能相同，暂不支持操作自环关系。")
+                    else:
+                        st.markdown("---")
+
+                        matching_rels = []
+                        for i, r in enumerate(st.session_state.master_relations):
+                            src = r.get("source")
+                            tgt = r.get("target")
+                            if (src == node_a and tgt == node_b) or (src == node_b and tgt == node_a):
+                                matching_rels.append((i, r))
+
+                        rel_op_mode = st.radio(
+                            f"针对 `{node_a}` 与 `{node_b}` 之间的操作：",
+                            ["✏️ 管理两者间已有关系", "➕ 新增一条关系连线"],
+                            horizontal=True
+                        )
+
+                        # ==========================================
+                        # 子功能 A：管理 / 修改 / 删除 现有关系
+                        # ==========================================
+                        if rel_op_mode == "✏️ 管理两者间已有关系":
+                            if not matching_rels:
+                                st.info(f"💡 `{node_a}` 和 `{node_b}` 之间目前没有任何直接连线。")
+                            else:
+                                rel_options = {}
+                                for idx, r in matching_rels:
+                                    src = r.get("source")
+                                    tgt = r.get("target")
+                                    rel_type = r.get("relation", SAFE_RELATIONS[0])
+                                    display_text = f"[{idx}] {src} ─[{rel_type}]▶ {tgt}"
+                                    rel_options[display_text] = idx
+
+                                selected_rel_text = st.selectbox("二级菜单：选择要修改的具体连线", list(rel_options.keys()))
+
+                                rel_idx = rel_options[selected_rel_text]
+                                target_rel = st.session_state.master_relations[rel_idx]
+
+                                with st.form("edit_rel_form"):
+                                    current_src = target_rel.get('source')
+                                    dir_option_1 = f"从 {node_a} ─▶ 指向 {node_b}"
+                                    dir_option_2 = f"从 {node_b} ─▶ 指向 {node_a}"
+
+                                    new_direction = st.selectbox(
+                                        "🔄 修改连线方向",
+                                        [dir_option_1, dir_option_2],
+                                        index=0 if current_src == node_a else 1
+                                    )
+
+                                    current_rel = target_rel.get("relation", "")
+                                    default_idx = SAFE_RELATIONS.index(
+                                        current_rel) if current_rel in SAFE_RELATIONS else 0
+                                    selected_rel_type = st.selectbox("🔖 修改关系类型", SAFE_RELATIONS, index=default_idx)
+
+                                    new_evidence = st.text_area("原文证据 (Evidence)", value=target_rel.get("evidence", ""))
+                                    new_reason = st.text_area("推理原因 (Reason)", value=target_rel.get("reason", ""))
+
+                                    # 💡 新增：允许修改关系的来源
+                                    new_doc_source = st.text_input("文献来源 (Doc Source)",
+                                                                   value=target_rel.get("doc_source", "手动添加"))
+
+                                    if st.form_submit_button("💾 保存修改", type="primary", use_container_width=True):
+                                        final_src, final_tgt = (node_a, node_b) if new_direction == dir_option_1 else (
+                                        node_b, node_a)
+
+                                        st.session_state.master_relations[rel_idx]["source"] = final_src
+                                        st.session_state.master_relations[rel_idx]["target"] = final_tgt
+                                        st.session_state.master_relations[rel_idx]["relation"] = selected_rel_type
+                                        st.session_state.master_relations[rel_idx]["evidence"] = new_evidence.strip()
+                                        st.session_state.master_relations[rel_idx]["reason"] = new_reason.strip()
+                                        # 💡 保存来源（如果清空了则使用默认值）
+                                        st.session_state.master_relations[rel_idx][
+                                            "doc_source"] = new_doc_source.strip() if new_doc_source.strip() else "手动修改"
+
+                                        st.toast("✅ 关系及方向修改成功！", icon="🎉")
+                                        redraw_and_update()
+
+                                st.markdown("---")
+                                if st.button("🚨 斩断 / 删除此连线", type="primary", use_container_width=True):
+                                    st.session_state.master_relations.pop(rel_idx)
+                                    st.toast("✅ 连线已彻底删除！", icon="✂️")
+                                    redraw_and_update()
+
+                        # ==========================================
+                        # 子功能 B：手动搭桥，安全新增
+                        # ==========================================
+                        elif rel_op_mode == "➕ 新增一条关系连线":
+                            with st.form("add_rel_form"):
+                                direction = st.radio(
+                                    "确认新连线的指向：",
+                                    [f"从 {node_a} ─▶ 指向 {node_b}", f"从 {node_b} ─▶ 指向 {node_a}"],
+                                    horizontal=True
+                                )
+
+                                selected_new_rel = st.selectbox("🔖 选择关系类型", SAFE_RELATIONS)
+                                new_evidence = st.text_area("原文证据 / 备注 (选填)")
+
+                                # 💡 新增：添加关系时允许填入来源
+                                new_doc_source = st.text_input("文献来源 (选填，为空则记为'手动添加')")
+
+                                if st.form_submit_button("💾 保存并添加连线", type="primary", use_container_width=True):
+                                    final_src, final_tgt = (node_a, node_b) if direction.startswith(
+                                        f"从 {node_a}") else (node_b, node_a)
+
+                                    exist = any(r.get("source") == final_src and
+                                                r.get("target") == final_tgt and
+                                                r.get("relation") == selected_new_rel
+                                                for r in st.session_state.master_relations)
+
+                                    if exist:
+                                        st.warning(
+                                            f"⚠️ `{final_src}` 到 `{final_tgt}` 已经存在 `{selected_new_rel}` 类型的连线了！")
+                                    else:
+                                        # 💡 确定最终来源
+                                        final_source_str = new_doc_source.strip() if new_doc_source.strip() else "手动添加"
+
+                                        st.session_state.master_relations.append({
+                                            "source": final_src,
+                                            "target": final_tgt,
+                                            "relation": selected_new_rel,
+                                            "evidence": new_evidence.strip(),
+                                            "reason": "用户手动添加",
+                                            "doc_source": final_source_str  # 💡 写入来源字段
+                                        })
+                                        st.toast("✅ 新关系建立成功！", icon="🎉")
+                                        redraw_and_update()
