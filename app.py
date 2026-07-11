@@ -11,6 +11,28 @@ import pandas as pd
 import uuid
 
 
+def redraw_and_update():
+    from back_logic import GraphVisualizer
+    import os
+    visualizer = GraphVisualizer()
+    html_file = ".bio_knowledge_graph.html"
+    if os.path.exists(html_file):
+        os.remove(html_file)
+
+    current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
+
+    visualizer.generate_html(
+        st.session_state.master_entities,
+        st.session_state.master_relations,
+        output_file=html_file,
+        show_shortcuts=current_show_shortcuts
+    )
+
+    if os.path.exists(html_file):
+        with open(html_file, "r", encoding="utf-8") as f:
+            st.session_state.html_data = f.read()
+
+
 # ==========================================
 # 页面全局配置
 # ==========================================
@@ -89,6 +111,117 @@ with left_col:
 
         st.info(f"📄 成功读取 PDF 文件，总计 **{total_pages}** 页。")
         st.divider()
+
+    # ==========================================
+    # 🌟 零基础冷启动 (Cold Start) 探索模块
+    # ==========================================
+    if not st.session_state.master_entities and not st.session_state.master_relations:
+        st.markdown("---")
+        st.markdown("### 💡 没有文献？对 AI 说说你要研究什么吧")
+        st.caption("只需输入一句话，AI 将自动检索、分批验证并为你搭建初始知识网络。")
+
+        user_topic = st.text_input("你的研究方向 (例如: 巨噬细胞极化在肿瘤微环境中的作用)", key="cold_start_topic")
+
+        if st.button("🚀 AI 一键检索并生成初始图谱", type="primary", use_container_width=True):
+            current_api_key = api_key.strip()
+            if not current_api_key:
+                st.error("❌ 请先在上方配置 API Key！")
+            elif not user_topic.strip():
+                st.warning("⚠️ 请输入你想研究的内容！")
+            else:
+                from LLM_SYS import BioBrainAgent
+                from WebSearcher import PubMedSearcher
+
+                agent = BioBrainAgent(api_key=current_api_key)
+                searcher = PubMedSearcher()
+
+                with st.spinner("🤖 AI 正在生成专业检索式..."):
+                    query = agent.generate_topic_query(user_topic)
+
+                if "[INVALID_TOPIC]" in query:
+                    st.error("🛑 输入内容似乎不是有效的科研方向，请换个说法试试！")
+                else:
+                    st.info(f"🔎 **生成检索式**: `{query}`")
+
+                    with st.spinner("🌐 正在 PubMed 抓取前 10 篇高相关文献准备排查..."):
+                        results = searcher.search_articles(query, max_results=10)
+
+                    if not results:
+                        st.warning("⚠️ 抱歉，未能检索到任何相关文献，请尝试调整研究方向词汇。")
+                    else:
+                        st.success(f"✅ 成功获取 {len(results)} 篇候选文献，启动滑动窗口排查...")
+
+                        batch_size = 3  # 每次送检 3 篇
+                        success = False
+                        valid_pmids = []
+
+                        # 🔄 开启滑动窗口排查
+                        for i in range(0, len(results), batch_size):
+                            chunk = results[i: i + batch_size]
+
+                            with st.spinner(f"🤔 正在验证第 {i + 1} 到 {min(i + batch_size, len(results))} 篇文献的匹配度..."):
+                                combined_abstracts = ""
+                                current_pmids = []
+
+                                for res in chunk:
+                                    pmid = res.get('pmid')
+                                    abs_text = searcher.fetch_abstract(pmid)
+                                    if len(abs_text) > 50:
+                                        combined_abstracts += f"\n\n--- PMID: {pmid} ---\n{abs_text}"
+                                        current_pmids.append(pmid)
+
+                                if not combined_abstracts:
+                                    continue  # 如果这几篇碰巧都没抓到摘要，跳过这批
+
+                                eval_result = agent.evaluate_abstracts_relevance(user_topic, combined_abstracts)
+
+                            if eval_result.get("is_relevant"):
+                                st.success(f"✅ **第 {i + 1}-{min(i + batch_size, len(results))} 篇文献验证通过**！与你的意图高度匹配。")
+                                st.info(f"**AI 评审意见**：{eval_result.get('reason')}")
+                                valid_pmids = current_pmids
+                                success = True
+                                break  # 🎉 验证成功，跳出排查循环！
+                            else:
+                                st.warning(
+                                    f"⏭️ 第 {i + 1}-{min(i + batch_size, len(results))} 篇文献跑偏了 ({eval_result.get('reason')})。继续排查下一批...")
+
+                        # ==========================================
+                        # 循环结束后的最终处理
+                        # ==========================================
+                        if success and valid_pmids:
+                            progress_text = "🧠 正在精读过审文献，深度抽取初始图谱网络..."
+                            my_bar = st.progress(0, text=progress_text)
+
+                            total_docs = len(valid_pmids)
+                            for idx, pmid in enumerate(valid_pmids):
+                                my_bar.progress((idx) / total_docs,
+                                                text=f"正在解析第 {idx + 1}/{total_docs} 篇过审文献 (PMID: {pmid})...")
+                                abs_text = searcher.fetch_abstract(pmid)
+
+                                # ✅ 修复后代码：使用 locals() 和 globals() 安全嗅探变量，防崩溃
+                                current_use_ref = use_reflection if 'use_reflection' in locals() or 'use_reflection' in globals() else True
+                                current_lang = entity_language if 'entity_language' in locals() or 'entity_language' in globals() else "English"
+
+                                new_entities = agent.extract_entities_with_reflection(abs_text,
+                                                                                      use_reflection=current_use_ref,
+                                                                                      entity_lang=current_lang)
+                                for ent in new_entities:
+                                    ent["doc_source"] = f"PubMed:{pmid}"
+                                    st.session_state.master_entities.append(ent)
+
+                                new_relations = agent.extract_relations(abs_text, st.session_state.master_entities)
+                                for rel in new_relations:
+                                    rel["doc_source"] = f"PubMed:{pmid}"
+                                    rel["weight"] = 1
+                                    st.session_state.master_relations.append(rel)
+
+                            my_bar.progress(1.0, text="✨ 初始图谱构建完成！")
+                            st.toast("✅ 一键起步成功！", icon="🎉")
+                            st.session_state.show_results = True
+                            redraw_and_update()
+                            st.rerun()
+                        elif not success:
+                            st.error(f"❌ 检索到的 {len(results)} 篇候选文献全部未能通过相关性验证。可能是研究方向过于前沿或关键词歧义，请尝试修改研究意图后重试！")
 
     st.subheader("⚙️ 2. 提取模式设置")
     # 🔥 全新进阶功能：可开关的“仅摘要模式”
@@ -507,28 +640,6 @@ if uploaded_file and start_button:
 # ==========================================
 # 🌟 注意：下面这段代码必须完全没有缩进，贴紧最左侧！
 if st.session_state.show_results and st.session_state.html_data:
-
-    def redraw_and_update():
-        from back_logic import GraphVisualizer
-        import os
-        visualizer = GraphVisualizer()
-        html_file = ".bio_knowledge_graph.html"
-        if os.path.exists(html_file):
-            os.remove(html_file)
-
-        current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
-
-        visualizer.generate_html(
-            st.session_state.master_entities,
-            st.session_state.master_relations,
-            output_file=html_file,
-            show_shortcuts=current_show_shortcuts
-        )
-
-        if os.path.exists(html_file):
-            with open(html_file, "r", encoding="utf-8") as f:
-                st.session_state.html_data = f.read()
-
 
     st.markdown("### 📥 4. 知识图谱结果导出")
 
@@ -1076,11 +1187,12 @@ if st.session_state.show_results and st.session_state.html_data:
         # -----------------------------------------
         if ai_nav == "🧹 智能洗树 (Pruning)":
             # 🚀 优化 2：调整优先级，将专属业务提示下沉到本栏目最上方，排版更优雅
-            st.info("💡 核心功能：基于大模型的上下文理解，自动发现并处理图谱中的同义词冗余、宏观与微观层级关系、以及机制捷径边。")
-            st.write("点击下方按钮，将当前图谱的拓扑结构与文献证据发送给大模型进行诊断。")
+            st.info("💡 拓扑清洗：基于大模型的上下文理解，自动发现并处理图谱中的同义词冗余、宏观与微观层级关系、以及机制捷径边。")
+
 
             col_btn, col_toggle = st.columns([1, 1])
             with col_btn:
+                st.write("点击下方按钮，将当前图谱的拓扑结构与文献证据发送给大模型进行诊断。")
                 if st.button("🚀 开始 AI 智能诊断图谱", type="primary", use_container_width=True):
                     current_api_key = api_key.strip()
 
@@ -1103,6 +1215,8 @@ if st.session_state.show_results and st.session_state.html_data:
             with col_toggle:
                 # 💡 优化 3：抛弃上一轮残留的旧 st.toggle 开关，统一改为文字提示
                 st.info("💡 诊断完成后，请直接在上方【图谱显示控制面板】灵活开启或关闭捷径边的显示。")
+
+
 
             # -----------------------------------------
             # 📋 渲染真实的审查清单并执行
@@ -1253,6 +1367,102 @@ if st.session_state.show_results and st.session_state.html_data:
                         st.toast("✅ 优化已完美执行！", icon="🎉")
                         redraw_and_update()
                         st.rerun()  # 🚀 优化 4：顺手在这里也加上手动 rerun()，让执行优化后的新图谱瞬间完美秒刷！
+
+            # ==========================================
+            # ✂️ 新增模块：基于意图的智能节点剪枝
+            # ==========================================
+            st.markdown("---")
+            st.subheader("✂️ 智能节点清洗 (Intent-Based Pruning)")
+            st.info("💡 意图剪枝：大模型将根据你输入的研究兴趣方向，揪出图谱中偏题或无关的对象（如误抓的其他器官/疾病），一键抹去它们及其连线。")
+
+            user_interest = st.text_area("请描述你当前聚焦的核心研究方向（例如：我只关心肠道上皮细胞的衰老机制，不关心其他器官）",
+                                         key="user_interest_prune")
+
+            if st.button("🔍 根据我的方向，找出偏题节点", type="primary", use_container_width=True):
+                current_api_key = api_key.strip()
+                if not current_api_key:
+                    st.error("❌ 请先在上方配置 API Key！")
+                elif not user_interest.strip():
+                    st.warning("⚠️ 请输入您的研究兴趣方向！")
+                else:
+                    with st.spinner("🧠 大模型正在逐一审视节点及邻居，挖掘偏题内容..."):
+                        from LLM_SYS import BioBrainAgent
+
+                        agent = BioBrainAgent(api_key=current_api_key)
+                        prune_suggestions = agent.prune_nodes_by_intent(
+                            user_interest,
+                            st.session_state.master_entities,
+                            st.session_state.master_relations
+                        )
+                        st.session_state.node_prune_suggestions = prune_suggestions
+                        st.toast("✅ 诊断完成，请在下方确认清洗名单！", icon="🤖")
+                        st.rerun()
+
+            # --- 渲染剪枝建议表 ---
+            if "node_prune_suggestions" in st.session_state and st.session_state.node_prune_suggestions:
+                st.markdown("### 🧹 偏题节点处决名单")
+                st.caption("请确认以下清洗建议。勾选【删除】的节点及其**所有相关连线**将被彻底从图谱中抹去。")
+
+                df_prune_data = []
+                for item in st.session_state.node_prune_suggestions:
+                    risk = item.get("risk_level", "")
+                    node_name = item.get("node_name", "")
+
+                    # 核心逻辑：完全无关和可能无关默认勾选，关联度低默认不勾选
+                    to_delete = True if risk in ["完全无关", "可能无关", "Completely_Irrelevant",
+                                                 "Potentially_Irrelevant"] else False
+
+                    # 找出该节点的邻居作为辅助判断信息
+                    neighbors = set()
+                    for r in st.session_state.master_relations:
+                        if r.get("source") == node_name:
+                            neighbors.add(r.get("target"))
+                        elif r.get("target") == node_name:
+                            neighbors.add(r.get("source"))
+
+                    df_prune_data.append({
+                        "🗑️ 删除": to_delete,
+                        "节点名称": node_name,
+                        "其连接的邻居": ", ".join(list(neighbors))[:60] + (
+                            "..." if len(", ".join(list(neighbors))) > 60 else ""),
+                        "风险等级": risk,
+                        "AI 判定依据": item.get("reason", "")
+                    })
+
+                df_prune = pd.DataFrame(df_prune_data)
+                edited_prune_df = st.data_editor(
+                    df_prune,
+                    use_container_width=True,
+                    hide_index=True,
+                    disabled=["节点名称", "其连接的邻居", "风险等级", "AI 判定依据"],  # 锁住数据，只让点多选框
+                    key="prune_data_editor"
+                )
+
+                col_prune_y, col_prune_n = st.columns(2)
+                with col_prune_y:
+                    if st.button("🚨 确认处决勾选节点", type="primary", use_container_width=True):
+                        nodes_to_delete = edited_prune_df[edited_prune_df["🗑️ 删除"] == True]["节点名称"].tolist()
+                        if nodes_to_delete:
+                            # 1. 物理抹杀实体
+                            st.session_state.master_entities = [
+                                e for e in st.session_state.master_entities if
+                                e.get("standard_name") not in nodes_to_delete
+                            ]
+                            # 2. 【级联删除】：物理抹杀带有这些节点的任何连线（无论是源还是目标）
+                            st.session_state.master_relations = [
+                                r for r in st.session_state.master_relations
+                                if r.get("source") not in nodes_to_delete and r.get(
+                                    "target") not in nodes_to_delete
+                            ]
+                            st.toast(f"✅ 成功清理了 {len(nodes_to_delete)} 个偏题节点及其连线！图谱瞬间纯净！", icon="🎉")
+
+                        st.session_state.node_prune_suggestions = None
+                        redraw_and_update()
+                        st.rerun()
+                with col_prune_n:
+                    if st.button("放弃本次剪枝", use_container_width=True):
+                        st.session_state.node_prune_suggestions = None
+                        st.rerun()
 
         # -----------------------------------------
         # -----------------------------------------
@@ -1439,7 +1649,8 @@ if st.session_state.show_results and st.session_state.html_data:
                                     st.toast(f"文献 {pmid} 摘要为空或过短，已自动跳过。", icon="⏭️")
                                 else:
                                     new_entities = agent.extract_entities_with_reflection(abstract,
-                                                                                          use_reflection=True)
+                                                                                          use_reflection=use_reflection,
+                                                                                          entity_lang=entity_language)
                                     for ent in new_entities:
                                         ent["doc_source"] = f"PubMed:{pmid}"
 
@@ -1721,7 +1932,8 @@ if st.session_state.show_results and st.session_state.html_data:
 
                                 # 呼叫大模型专属狙击提取
                                 bridge_result = agent.extract_bridge_mechanism(node_a, node_b,
-                                                                               combined_abstracts)
+                                                                               combined_abstracts,
+                                                                               entity_lang=entity_language)
                                 st.session_state.pending_bridge_data = bridge_result
                                 st.session_state.bridge_found_docs = None  # 清空文献选择框，进入下一阶段
                                 st.rerun()

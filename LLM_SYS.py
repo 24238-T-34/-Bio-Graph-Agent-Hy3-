@@ -378,38 +378,42 @@ class BioBrainAgent:
         print(f"🎯 [Agent] 桥接检索策略: {query}")
         return query
 
-    def extract_bridge_mechanism(self, node_a, node_b, abstracts_text):
+    def extract_bridge_mechanism(self, node_a, node_b, abstracts_text, entity_lang="English"):
         """
         专门用于【智能桥接】模块：阅读多篇文献摘要，狙击式提取只与 A 和 B 联系相关的实体与关系。
-        返回包含解释文本和图谱元素的字典。
+        增加 entity_lang 参数以统一图谱命名规范。
         """
-        system_prompt = """你是一个顶尖的分子生物学机制挖掘专家。
+        system_prompt = f"""你是一个顶尖的分子生物学机制挖掘专家。
         用户将提供【实体A】和【实体B】，以及从 PubMed 检索到的【多篇相关文献摘要】。
         你的任务是：专门寻找并提取连接 A 和 B 的深层调控机制或中间通路。
         ⚠️ 核心警告：请彻底忽略与连接这两个实体无关的其他背景知识、旁支靶点！
 
+        【🌐 命名语言强制规范】：
+        所有提取出的 entities (主要是标准名 standard_name ) 以及 ，必须强制使用 {entity_lang} 进行输出！
+        (注：explanation, evidence, reason 以及 relation 关系动词可以使用中文，以方便阅读)
+
         请严格按照以下 JSON 格式返回数据：
-        {
+        {{
             "explanation": "在这里写一段连贯的文本报告（支持Markdown）：综合这些文献，解释 A 是如何通过哪些中间介导物影响 B 的。如果没有找到任何确切证据，请在此说明。",
             "entities": [
-                {"standard_name": "实体名", "aliases": ["别名1", "别名2"]}
+                {{"standard_name": "实体名", "aliases": ["别名1", "别名2"]}}
             ],
             "relations": [
-                {
+                {{
                     "source": "主语",
                     "target": "宾语",
                     "relation": "关系动词(如 激活, 抑制, 磷酸化)",
                     "evidence": "从文献中摘抄的证明原句",
                     "reason": "你对这条调控逻辑的简短解释",
                     "doc_source": "对应的 PMID 或文献标题"
-                }
+                }}
             ]
-        }
+        }}
         注意：entities 中必须包含你找出的所有关键中间节点，以及 A 和 B 本身。如果没有找到桥接关系，entities 和 relations 请返回空列表 []。
         """
         user_content = f"【实体A】：{node_a}\n【实体B】：{node_b}\n\n【供分析的文献摘要合集】：\n{abstracts_text}"
 
-        print(f"🧠 [Agent] 正在狙击式阅读文献，挖掘 {node_a} 与 {node_b} 的专属桥接机制...")
+        print(f"🧠 [Agent] 正在使用 {entity_lang} 命名规范，挖掘 {node_a} 与 {node_b} 的桥接机制...")
         raw_response = self._ask_llm(system_prompt, user_content)
 
         try:
@@ -419,3 +423,124 @@ class BioBrainAgent:
         except Exception as e:
             print(f"❌ [Agent] 桥接机制 JSON 解析失败: {e}")
             return {"explanation": "解析大模型返回结果失败，请重试。", "entities": [], "relations": []}
+
+    def generate_topic_query(self, user_topic):
+        """
+        冷启动模块：将用户的自然语言研究意图，转化为专业的 PubMed 检索式。
+        【结构化拆解版】：防止过度泛化导致器官丢失，强制保留靶向组织。
+        """
+        system_prompt = """你是一个顶级的生物医学信息检索专家（Medical Librarian）。
+        请根据用户的【自然语言研究意图】，构造一个专业、精准且高召回率的 PubMed 布尔检索式。
+
+        【🚨 核心检索策略 (绝对遵守)】：
+        1. 剔除泛机制类“元词汇”（致命错误）：【绝对禁止】在检索式中加入 pathway, mechanism, protein, bridge protein, adaptor, crosstalk, interaction, target 等泛指词汇！在 PubMed 中搜索具体表型和实体即可。
+        2. 必须保留“器官/组织/细胞”锚点：如果用户明确了研究对象（如“肠道”），必须把它作为一个独立的 AND 逻辑块，加上同义词（如 intestinal OR gut OR colon）。
+        3. 自然切分逻辑块（解除数量限制）：如果用户描述了 A -> B -> C 的多步机制，请将它们分为独立的 AND 逻辑块。⚠️ 严禁把完全不同的生物学概念（如“细胞衰老”和“免疫逃逸”）强行塞进同一个 OR 括号里！
+        4. 极致同义词拓展 (预防0结果)：你必须为每一个概念提供 4-6 个极其宽泛的同义词或相关词（用 OR 连接）。
+        5. 禁用 MeSH 标签：绝对禁止添加 [Mesh]、[majr] 等标签，直接使用自由词或 [tiab]。
+        6. 🌟 鼓励分段组合检索 (大招)：对于 A -> B -> C 的长链宏大假说，单靠全链条串联极容易搜不到文献。我们极其鼓励你拆开搜索！你可以建立 A+B+C 的全貌网络，也同时建立 A+B, B+C, A+C 的局部网络，并将这些网络用大的 OR 连接起来（例如：(A AND B AND C) OR (A AND B) OR (B AND C)）。在每一个小的 AND 区间内，请放开手脚大胆发挥你的专业度！
+
+        【实战示范】：
+        用户意图：“长期熬夜导致肠道上皮细胞衰老，通过哪些桥梁蛋白引起肿瘤免疫逃逸？”
+        ❌ 错误（不同概念强行合并进 OR）：(circadian rhythm) AND (intestinal) AND (senescence OR tumor immune escape)
+        ❌ 错误（包含泛机制词）：(circadian rhythm) AND (intestinal) AND (senescence) AND (pathway OR bridge protein)
+        ✅ 正确的自由分段组合式：
+        ((circadian rhythm OR sleep deprivation) AND (intestinal OR gut) AND (senescence OR SASP) AND (immune evasion OR tumor immune escape)) OR ((circadian rhythm OR sleep deprivation) AND (intestinal OR gut) AND (senescence OR SASP)) OR ((intestinal OR gut) AND (senescence OR SASP) AND (immune evasion OR tumor immune escape))
+
+        【最后警告】：如果用户的输入完全无科学意义，请直接输出纯文本：[INVALID_TOPIC]。
+        ⚠️ 严禁输出任何解释性文字，严禁使用 Markdown 代码块，只能输出纯粹的检索式字符串！
+        """
+
+        user_content = f"【用户研究意图】：{user_topic}"
+
+        print(f"🧠 [Agent] 正在将意图转化为检索式...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+        return self._clean_json_string(raw_response)
+
+    def evaluate_abstracts_relevance(self, user_topic, abstracts_text):
+        """
+        冷启动反思模块：检查抓取回来的文献摘要是否符合意图。
+        【核心技巧】：在 JSON 中强制要求先输出 reason，再输出 is_relevant，通过思维链 (CoT) 大幅提升判断准确率。
+        """
+        system_prompt = """你是一个宽容的知识图谱构建助手。
+        你需要评估检索到的文献摘要，是否有助于为用户的研究意图构建【初始图谱】。
+
+        【🟢 核心放行标准 (局部命中 = 完美)】：
+        用户经常提出 A -> B -> C 这样跨界宏大的假说。真实的文献绝大多数只会研究其中的一小段（比如只研究 A->B，或者只研究 B->C）。
+        因此，只要这批文献中有【任何一篇】探讨了假说中的【局部环节】（例如：只探讨了“熬夜与肠道”，或者只探讨了“肠道衰老”），这就叫极其有价值的拼图！
+        【绝对禁止】因为“文献没有涵盖用户提到的所有环节”而驳回！
+
+        【🛑 驳回标准】：
+        只有当这些文献与用户的各个切片【完全无关】（例如全都是讲植物、或者全都是毫无细胞机制的流行病学调查）时，才驳回。
+
+        请严格返回如下 JSON 格式：
+        {
+            "reason": "请说明该文献命中了用户宏大假说中的哪一个局部切片（说明为什么放行）。严禁抱怨文献没有覆盖全链条！",
+            "is_relevant": true 或 false
+        }
+        """
+        user_content = f"【用户研究意图】：{user_topic}\n\n【检索到的文献摘要】：\n{abstracts_text}"
+
+        print(f"🧠 [Agent] 正在使用思维链 (CoT) 反思文献相关性...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+        try:
+            cleaned_json = self._clean_json_string(raw_response)
+            return json.loads(cleaned_json)
+        except Exception as e:
+            print(f"❌ [Agent] 相关性评估 JSON 解析失败: {e}")
+            return {"reason": "解析大模型输出失败，默认放行。", "is_relevant": True}
+
+    def prune_nodes_by_intent(self, user_intent, entities, relations):
+        """
+        基于意图的智能剪枝：让大模型根据用户的研究兴趣，揪出无关的“杂草”节点。
+        """
+        # 构建带有拓扑上下文的轻量级节点字典，节省 Token 并提供判断依据
+        node_context = []
+        for ent in entities:
+            node_name = ent.get("standard_name")
+            neighbors = set()
+            for r in relations:
+                if r.get("source") == node_name:
+                    neighbors.add(r.get("target"))
+                elif r.get("target") == node_name:
+                    neighbors.add(r.get("source"))
+            # 如果没有邻居，就标注为孤立节点
+            neighbor_str = ", ".join(list(neighbors)) if neighbors else "无(孤立节点)"
+            node_context.append(f"节点: {node_name} | 其连接的邻居: {neighbor_str}")
+
+        context_str = "\n".join(node_context)
+
+        system_prompt = """你是一个严谨且果断的生物医学知识图谱清理专家。
+        当前图谱在构建过程中不可避免地引入了一些偏离主题的节点（噪音）。你需要根据用户提供的【核心研究方向】，对下列所有节点逐一进行严格审视。
+
+        【风险等级标准】：
+        1. "完全无关": 与用户研究方向毫无关联，或者是明显被误判进来的同名异义词、其他无关器官/疾病的节点，坚决建议删除。
+        2. "可能无关": 偏离研究核心，或者联系极其薄弱的旁支对象，建议删除。
+        3. "关联度低": 依然在相关领域内，但对核心问题扩展性不足或过于泛泛而谈，交由用户定夺。
+        4. "核心相关": 与研究方向紧密相关，非常重要（注意：核心相关的节点直接跳过，绝对不要输出到最终结果中！）。
+
+        请返回 JSON 数组格式（仅包含前三种风险级别的节点），格式如下：
+        [
+            {
+                "node_name": "被判定的节点名称",
+                "risk_level": "完全无关/可能无关/关联度低",
+                "reason": "请结合其邻居信息，简短说明为什么该节点偏离了用户的研究意图"
+            }
+        ]
+
+        ⚠️ 严禁输出任何多余的解释，严禁使用 Markdown 代码块，只能输出纯粹的 JSON 数组！如果所有节点都极其完美相关，请返回空数组 []。
+        """
+
+        user_content = f"【用户核心研究方向】：{user_intent}\n\n【图谱节点上下文列表】：\n{context_str}"
+
+        print(f"🧠 [Agent] 正在基于意图对图谱节点进行清洗评估...")
+        raw_response = self._ask_llm(system_prompt, user_content)
+        try:
+            cleaned_json = self._clean_json_string(raw_response)
+            return json.loads(cleaned_json)
+        except Exception as e:
+            print(f"❌ [Agent] 节点清洗 JSON 解析失败: {e}")
+            return []
+
+
+
