@@ -19,7 +19,7 @@ class PDFProcessor:
         text = ""
         try:
             with open(pdf_path, 'rb') as file:
-                reader = PyPDF2.PdfReader(file)
+                reader = pypdf.PdfReader(file)
                 total_pages = len(reader.pages)
 
                 # 如果没有指定结束页，或者结束页越界，则默认读到最后一页
@@ -87,14 +87,17 @@ class GraphVisualizer:
         self.bgcolor = bgcolor
         self.font_color = font_color
 
-    def generate_html(self, global_entities, global_relations, output_file="bio_knowledge_graph.html",show_shortcuts=False):
+    def generate_html(self, global_entities, global_relations, output_file="bio_knowledge_graph.html",
+                      show_shortcuts=False,
+                      empower_ontology=False, alpha_ontology=0.5,
+                      empower_node=False, beta_node=0.2,
+                      empower_edge=False, gamma_edge=0.1):
         print(f"🎨 [GraphVisualizer] 正在绘制动态网络拓扑图...")
         from pyvis.network import Network
         from collections import Counter
         import os
 
-        # 🔥 绝杀修复 1：去除 notebook=True，恢复标准的网页结构
-        # 🔥 绝杀修复 2：使用 remote CDN，让生成的 HTML 只有区区几十KB，极大减轻 Streamlit 负担
+        # 🔥 绝杀修复 1 & 2：保持 CDN 和网络配置不变
         net = Network(
             height="750px",
             width="100%",
@@ -117,33 +120,62 @@ class GraphVisualizer:
             }
 
         # ==========================================
-        # 2. 统计节点热度 (用于动态调整节点大小)
+        # 2. 🧮 赋权引擎 Phase 0：统计基础节点热度 (保留原有的 weight 机制)
         # ==========================================
-        node_heat = Counter()
+        base_heat = Counter()
         for item in global_relations:
-            # 🌟 修改：不再盲目 +1，而是读取合并后该通路真实拥有的热度权重
             weight = item.get("weight", 1)
-            node_heat[item.get("source")] += weight
-            node_heat[item.get("target")] += weight
+            base_heat[item.get("source")] += weight
+            base_heat[item.get("target")] += weight
+
+        final_heat = Counter(base_heat)  # 创建快照字典，后续操作在此累加
 
         # ==========================================
-        # 🔥 绝杀修复 3：先统一、去重地添加所有实体节点
+        # 🌟 赋权引擎 Phase 1 & 2：本体聚合与互相辐射
+        # ==========================================
+        for item in global_relations:
+            source = item.get("source")
+            target = item.get("target")
+            rel_type = item.get("relation", "相关")  # 注意这里使用原来的 key
+
+            # 🛡️ 致命 Bug 修复：拦截自环线！
+            if source == target:
+                continue
+
+            # 🛡️ 强转洗净捷径参数，判断该线是否被隐藏
+            raw_shortcut = item.get("is_shortcut", False)
+            is_shortcut = (str(raw_shortcut).lower() == "true") or (raw_shortcut is True)
+            safe_show = (str(show_shortcuts).lower() == "true") or (show_shortcuts is True)
+            is_hidden = is_shortcut and not safe_show
+
+            # 【开关 A】：包含关系反哺 (父节点变大)
+            if empower_ontology and rel_type == "包含":
+                final_heat[target] += base_heat[source] * alpha_ontology
+
+            # 【开关 B】：节点互相辐射 (普通连线两端互相做大，排除隐藏线和包含关系)
+            if empower_node and rel_type != "包含" and not is_hidden:
+                final_heat[source] += base_heat[target] * beta_node
+                final_heat[target] += base_heat[source] * beta_node
+
+        # ==========================================
+        # 3. 🎨 统一绘制节点 (应用计算好的 final_heat)
         # ==========================================
         for std_name, info in entity_info_map.items():
-            node_title = f"🏷️ 标准名称: {std_name}\n📚 别名: {', '.join(info['aliases'])}\n📄 来源文献: {info['doc_source']}"
-            node_size = 20 + node_heat[std_name] * 3
-            # 一次性添加所有合法节点，杜绝重复渲染导致的 JS 崩溃
+            heat_val = final_heat[std_name]
+            node_title = f"🏷️ 标准名称: {std_name}\n📚 别名: {', '.join(info['aliases'])}\n📄 来源文献: {info['doc_source']}\n🔥 综合热度: {heat_val:.1f}"
+
+            # 动态调整大小 (保留原有的缩放比例逻辑)
+            node_size = 20 + heat_val * 3
             net.add_node(std_name, label=std_name, title=node_title, color="#4da6ff", size=node_size)
 
         # ==========================================
-        # 3. 再绘制关系连线 (稳定强化版)
+        # 4. 🎨 绘制关系连线 (保留所有防御与颜色逻辑，加入加粗引擎)
         # ==========================================
         for item in global_relations:
             source = item.get("source")
             target = item.get("target")
 
-            # 🛡️ 致命 Bug 修复：拦截自环线！
-            # 防止 AI 合并同义词后出现“自己连自己”的情况，从而彻底杜绝物理引擎内存溢出卡死
+            # 🛡️ 再次拦截自环线
             if source == target:
                 continue
 
@@ -151,30 +183,25 @@ class GraphVisualizer:
             evidence = item.get("evidence", "无")
             doc_source = item.get("doc_source", "未知文献")
 
-            # ==========================================
-            # 🛡️ 终极安全强转：应对各种前后端传参“玄学”
-            # ==========================================
-            # 1. 强制洗净 is_shortcut (无论传进来是字符串 "true", "True" 还是 bool True，统统转为纯粹的 True)
+            # 🛡️ 终极安全强转 (保持原样)
             raw_shortcut = item.get("is_shortcut", False)
             is_shortcut = (str(raw_shortcut).lower() == "true") or (raw_shortcut is True)
-
-            # 2. 强制洗净前端传来的 show_shortcuts
             safe_show = (str(show_shortcuts).lower() == "true") or (show_shortcuts is True)
 
-
-
-            # 拦截逻辑（使用洗净后的安全变量）
+            # 拦截被隐藏的捷径
             if is_shortcut and not safe_show:
                 continue
 
-            # 🌟 提取连线热度权重
+            # 🌟 基础连线宽度 (保留你原有的缩放系数)
             rel_weight = item.get("weight", 1)
-
-            # 💡 核心视觉优化：加入缩放系数
             scale_factor = 0.5
             display_width = 1 + (rel_weight * scale_factor)
 
-            # 🛡️ 防御性编程 (保持原样)
+            # 🔗 【开关 C】：核心主干加粗 (高热度节点间的非包含线变粗)
+            if empower_edge and rel_type != "包含":
+                display_width += gamma_edge * (final_heat[source] + final_heat[target])
+
+            # 🛡️ 防御性编程：幻觉节点探测 (保持原样)
             for node in [source, target]:
                 if node not in entity_info_map:
                     net.add_node(node, label=node, color="#ff9999", size=20,
@@ -182,14 +209,13 @@ class GraphVisualizer:
                     entity_info_map[node] = {"aliases": [], "doc_source": doc_source}
 
             # 强化悬停提示框
-            edge_title = f"🔥 证据热度: {rel_weight} 次提及\n🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
+            edge_title = f"🔥 证据合并次数: {rel_weight} 次\n🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
             if is_shortcut:
                 edge_title = "⚠️ [AI 判定为机制捷径]\n" + edge_title
 
             # ==========================================
-            # 🎨 视觉分支判断：颜色、虚线与箭头处理
+            # 🎨 视觉分支判断：保持你原有的颜色、虚线与箭头处理
             # ==========================================
-            # 💡 如果是捷径，强制变成深灰色 (#555555) 和虚线 (dashes=True)
             shortcut_color = "#555555"
             force_dashed = True if is_shortcut else False
 
@@ -201,16 +227,14 @@ class GraphVisualizer:
             elif rel_type == "负作用":
                 final_color = shortcut_color if is_shortcut else "#ff3333"
                 net.add_edge(source, target, title=edge_title, color=final_color, arrows="to",
-                             width=display_width + 1, dashes=force_dashed)  # 负作用依然加粗
+                             width=display_width + 1, dashes=force_dashed)
 
             elif rel_type == "包含":
-                # 💡 新增：包含关系显示为高贵紫，并且带有标准箭头
                 final_color = shortcut_color if is_shortcut else "#9b59b6"
                 net.add_edge(source, target, title=edge_title, color=final_color, arrows="to",
                              width=display_width, dashes=force_dashed)
 
             else:
-                # 💡 修复：“相关”关系原本就是虚线，正常显示为浅灰色，且强行去除箭头 (arrows="")
                 final_color = shortcut_color if is_shortcut else "#aaaaaa"
                 net.add_edge(source, target, title=edge_title, color=final_color, arrows="",
                              dashes=True, width=display_width)

@@ -9,6 +9,7 @@ import fitz  # 🚀 优化：把 PyMuPDF 移到文件顶部，规范代码结构
 import json
 import pandas as pd
 import uuid
+import re
 
 
 def redraw_and_update():
@@ -21,12 +22,31 @@ def redraw_and_update():
 
     current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
 
+    # 🧮 抓取三大赋权引擎的开关状态
+    empower_ontology = st.session_state.get("empower_ontology", False)
+    alpha_ontology = st.session_state.get("alpha_ontology", 0.5)
+
+    # ✨ 新增：节点互相辐射开关
+    empower_node = st.session_state.get("empower_node", False)
+    beta_node = st.session_state.get("beta_node", 0.2)
+
+    # ✨ 新增：主干连线加粗开关
+    empower_edge = st.session_state.get("empower_edge", False)
+    gamma_edge = st.session_state.get("gamma_edge", 0.1)
+
     visualizer.generate_html(
         st.session_state.master_entities,
         st.session_state.master_relations,
         output_file=html_file,
-        show_shortcuts=current_show_shortcuts
+        show_shortcuts=current_show_shortcuts,
+        empower_ontology=empower_ontology,
+        alpha_ontology=alpha_ontology,
+        empower_node=empower_node,  # 传给后端
+        beta_node=beta_node,
+        empower_edge=empower_edge,  # 传给后端
+        gamma_edge=gamma_edge
     )
+
 
     if os.path.exists(html_file):
         with open(html_file, "r", encoding="utf-8") as f:
@@ -108,15 +128,15 @@ with left_col:
 
         total_pages = st.session_state["total_pages"]
         tmp_path = st.session_state["tmp_path"]
-
+        st.markdown("---")
         st.info(f"📄 成功读取 PDF 文件，总计 **{total_pages}** 页。")
         st.divider()
 
     # ==========================================
     # 🌟 零基础冷启动 (Cold Start) 探索模块
     # ==========================================
-    if not st.session_state.master_entities and not st.session_state.master_relations:
-        st.markdown("---")
+    if not st.session_state.master_entities and not st.session_state.master_relations and not uploaded_file:
+        #st.markdown("---")
         st.markdown("### 💡 没有文献？对 AI 说说你要研究什么吧")
         st.caption("只需输入一句话，AI 将自动检索、分批验证并为你搭建初始知识网络。")
 
@@ -613,10 +633,30 @@ if uploaded_file and start_button:
                 if os.path.exists(html_file):
                     os.remove(html_file)
 
+                # ✨ 漏洞修复：抓取当前控制台的所有开关和滑块状态（带默认值防呆）
+                current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
+
+                empower_ontology = st.session_state.get("empower_ontology", False)
+                alpha_ontology = st.session_state.get("alpha_ontology", 0.5)
+
+                empower_node = st.session_state.get("empower_node", False)
+                beta_node = st.session_state.get("beta_node", 0.2)
+
+                empower_edge = st.session_state.get("empower_edge", False)
+                gamma_edge = st.session_state.get("gamma_edge", 0.1)
+
+                # ✨ 将所有状态参数全部传给渲染器，保证新生成的图谱继承当前的视觉设置！
                 visualizer.generate_html(
                     st.session_state.master_entities,
                     st.session_state.master_relations,
-                    output_file=html_file
+                    output_file=html_file,
+                    show_shortcuts=current_show_shortcuts,
+                    empower_ontology=empower_ontology,
+                    alpha_ontology=alpha_ontology,
+                    empower_node=empower_node,
+                    beta_node=beta_node,
+                    empower_edge=empower_edge,
+                    gamma_edge=gamma_edge
                 )
 
             # 🟢 阶段四：所有处理完成，将结果存入全局保险箱
@@ -669,17 +709,27 @@ if st.session_state.show_results and st.session_state.html_data:
 
     st.markdown("---")
 
-    disp_col1, disp_col2 = st.columns(2)
-    with disp_col1:
-        # 使用 key="show_shortcuts_toggle" 赋予它永久记忆
-        # 使用 on_change=redraw_and_update 让它一被点击就瞬间重绘画布！
-        st.toggle(
-            "👁️ 显示机制捷径边",
-            key="show_shortcuts_toggle",
-            on_change=redraw_and_update
-        )
-    with disp_col2:
-        st.caption("✨ ")
+    ctrl_col1, ctrl_col2, ctrl_col3, ctrl_col4 = st.columns(4)
+
+    with ctrl_col1:
+        st.toggle("👁️ 显示机制捷径边", key="show_shortcuts_toggle", on_change=redraw_and_update)
+
+    with ctrl_col2:
+        st.toggle("🧬 包含关系反哺\n(父节点变大)", key="empower_ontology", on_change=redraw_and_update)
+        if st.session_state.get("empower_ontology", False):
+            st.slider("反哺转移比例 (α)", 0.1, 1.0, 0.5, 0.1, key="alpha_ontology", on_change=redraw_and_update)
+
+    with ctrl_col3:
+        # ✨ 你之前想要的“节点互相辐射”回来了！
+        st.toggle("🌟 节点互相辐射\n(强关联节点变大)", key="empower_node", on_change=redraw_and_update)
+        if st.session_state.get("empower_node", False):
+            st.slider("互相辐射加成率 (β)", 0.1, 1.0, 0.2, 0.1, key="beta_node", on_change=redraw_and_update)
+
+    with ctrl_col4:
+        # ✨ 纯粹的“连线加粗”独立开关！
+        st.toggle("🔗 核心主干加粗\n(高热度连线变粗)", key="empower_edge", on_change=redraw_and_update)
+        if st.session_state.get("empower_edge", False):
+            st.slider("连线增粗系数 (γ)", 0.05, 0.5, 0.1, 0.05, key="gamma_edge", on_change=redraw_and_update)
 
 
 
@@ -1175,7 +1225,7 @@ if st.session_state.show_results and st.session_state.html_data:
         # 🚀 优化 1：使用带记忆锁的 Radio 导航替代失忆的 st.tabs
         ai_nav = st.radio(
             "选择 AI 模块：",
-            ["🧹 智能洗树 (Pruning)", "🔍 智能拓展 (Smart Expansion)","🔗 智能桥接 (Bridging)"],
+            ["🧹 智能洗树 (Pruning)", "🔍 智能拓展 (Smart Expansion)","🔗 智能桥接 (Bridging)","🤖 问 AI"],
             horizontal=True,
             label_visibility="collapsed",
             key="ai_nav_radio"  # 🔗 专属记忆密钥，任何刷新都不会丢失当前标签
@@ -1781,7 +1831,7 @@ if st.session_state.show_results and st.session_state.html_data:
         # 模块三：🔗 智能桥接 (Intelligent Bridging)
         # -----------------------------------------
         elif ai_nav == "🔗 智能桥接 (Bridging)":
-            st.info("💡 选中两个靶点/疾病，AI 将在图谱中寻找它们之间的所有多步通路，并推导深层分子机制。如果是孤岛，可一键呼叫 AI 联网挖掘！")
+            st.info("💡 选中两个节点，AI 将在图谱中寻找它们之间的所有多步通路，并推导深层分子机制。如果是孤岛，可一键呼叫 AI 联网挖掘！")
 
             all_node_names = [e.get("standard_name") for e in st.session_state.master_entities]
 
@@ -2026,3 +2076,197 @@ if st.session_state.show_results and st.session_state.html_data:
                         if col_rej.button("❌ 感觉不对，放弃并清空", use_container_width=True):
                             st.session_state.pending_bridge_data = None
                             st.rerun()
+
+
+        # -----------------------------------------
+
+        # 模块四：🤖 问 AI (Ask AI)
+
+        # -----------------------------------------
+
+        elif ai_nav == "🤖 问 AI":
+
+            st.info("💡 选中图谱中的任何节点或连线，AI 将结合它的【文献来源依据】和【网络拓扑】，为您提供独家解读。")
+
+            explain_mode = st.radio("你想让 AI 解读什么？", ["解读节点 (Node)", "解读关系连线 (Edge)"], horizontal=True)
+
+            if explain_mode == "解读节点 (Node)":
+
+                if not st.session_state.master_entities:
+
+                    st.warning("图谱中还没有节点。")
+
+                else:
+
+                    node_list = sorted([e.get("standard_name") for e in st.session_state.master_entities])
+
+                    target_node = st.selectbox("请选择要解读的节点：", ["-- 请选择 --"] + node_list,
+                                               key="ask_ai_target_node")
+
+                    if target_node != "-- 请选择 --":
+
+                        if st.button("✨ 让 AI 深度解读该节点", type="primary"):
+
+                            # 🛡️ 修复一：API 防护，拒绝裸奔报错崩溃
+
+                            current_api_key = api_key.strip()
+
+                            if not current_api_key:
+
+                                st.error("❌ 请先在侧边栏配置并保存您的 API Key！")
+
+                            else:
+
+                                with st.spinner(f"🧠 正在提取 {target_node} 的微上下文并生成解读..."):
+
+                                    # 1. 组装微上下文
+
+                                    context_lines = []
+
+                                    for r in st.session_state.master_relations:
+
+                                        rel_type = r.get('relation_type', r.get('relation', '关联'))
+
+                                        safe_reason = str(r.get('reason', '无')).replace('{', '(').replace('}',
+                                                                                                          ')')
+
+                                        raw_doc = r.get('doc_source', '未知')
+
+                                        # 🛡️ 安全加固：清洗文件名，防止间接提示词注入
+
+                                        safe_doc = re.sub(r'[^\w\u4e00-\u9fa5.-]', '_', str(raw_doc))[:60]
+
+                                        if r.get("source") == target_node:
+
+                                            context_lines.append(
+                                                f"<edge>起点:[{target_node}] -> 终点:[{r.get('target')}] | 关系:[{rel_type}] | 提取依据:[{safe_reason}] | 来源:[{safe_doc}]</edge>")
+
+                                        elif r.get("target") == target_node:
+
+                                            context_lines.append(
+                                                f"<edge>起点:[{r.get('source')}] -> 终点:[{target_node}] | 关系:[{rel_type}] | 提取依据:[{safe_reason}] | 来源:[{safe_doc}]</edge>")
+
+                                    local_ctx = "\n".join(context_lines) if context_lines else "该节点目前没有与其他节点相连。"
+
+                                    # 2. 呼叫大模型
+
+                                    from LLM_SYS import BioBrainAgent
+
+                                    agent = BioBrainAgent(api_key=current_api_key)
+
+                                    explanation = agent.explain_graph_element("节点", target_node, local_ctx)
+
+                                    st.markdown("### 📝 AI 解读报告")
+
+                                    st.markdown(explanation)
+
+
+            else:
+
+                # 🎯 ✨ 修复二：完美参考【关系操作】的双节点选择器交互
+
+                if not st.session_state.master_entities:
+
+                    st.info("当前图谱为空，请先添加节点。")
+
+                else:
+
+                    all_node_names = sorted([e.get("standard_name") for e in st.session_state.master_entities])
+
+                    st.markdown("### 🔍 选择需要解读关系的两个节点")
+
+                    col_a, col_b = st.columns(2)
+
+                    with col_a:
+
+                        node_a = st.selectbox("📍 选择节点 A", ["-- 请选择 --"] + all_node_names,
+                                              key="ask_ai_edge_node_a")
+
+                    with col_b:
+
+                        node_b = st.selectbox("🎯 选择节点 B", ["-- 请选择 --"] + all_node_names,
+                                              key="ask_ai_edge_node_b")
+
+                    if node_a != "-- 请选择 --" and node_b != "-- 请选择 --":
+
+                        if node_a == node_b:
+
+                            st.warning("⚠️ 节点 A 和节点 B 不能相同，暂不支持解读自环关系。")
+
+                        else:
+
+                            # 遍历搜索两个节点之间已经存在的关系（包含双向）
+
+                            matching_rels = []
+
+                            for i, r in enumerate(st.session_state.master_relations):
+
+                                src = r.get("source")
+
+                                tgt = r.get("target")
+
+                                if (src == node_a and tgt == node_b) or (src == node_b and tgt == node_a):
+                                    matching_rels.append((i, r))
+
+                            if not matching_rels:
+
+                                st.info(f"ℹ️ 暂无 `{node_a}` 与 `{node_b}` 之间的关系连线。")
+
+                            else:
+
+                                # 将过滤出的所有关系变成下拉选项（防止两者存在多条关联时漏看）
+
+                                rel_options = {}
+
+                                for idx, r in matching_rels:
+                                    rel_type = r.get('relation_type', r.get('relation', '关联'))
+
+                                    label = f"[{idx}] {r.get('source')} --[{rel_type}]--> {r.get('target')}"
+
+                                    rel_options[label] = r
+
+                                target_rel_label = st.selectbox("🔗 发现可用连线，请选择具体要解读的那一条：",
+                                                                list(rel_options.keys()),
+                                                                key="ask_ai_target_rel_line")
+
+                                if st.button("✨ 让 AI 深度解读该连线", type="primary"):
+
+                                    # 🛡️ 修复一：API 防护，防止忘填 Key 时报错白屏
+
+                                    current_api_key = api_key.strip()
+
+                                    if not current_api_key:
+
+                                        st.error("❌ 请先在侧边栏配置并保存您的 API Key！")
+
+                                    else:
+
+                                        target_rel = rel_options[target_rel_label]
+
+                                        with st.spinner(f"🧠 正在分析连线机制并生成解读..."):
+
+                                            rel_type = target_rel.get('relation_type',
+                                                                      target_rel.get('relation', '关联'))
+
+                                            safe_reason = str(target_rel.get('reason', '无')).replace('{',
+                                                                                                     '(').replace(
+                                                '}', ')')
+
+                                            raw_doc = target_rel.get('doc_source', '未知')
+
+                                            # 🛡️ 安全加固：清洗文件名
+
+                                            safe_doc = re.sub(r'[^\w\u4e00-\u9fa5.-]', '_', str(raw_doc))[:60]
+
+                                            local_ctx = f"<edge_data>\n起点: {target_rel.get('source')}\n终点: {target_rel.get('target')}\n关系类型: {rel_type}\n文献提取依据: {safe_reason}\n文献来源: {safe_doc}\n</edge_data>"
+
+                                            from LLM_SYS import BioBrainAgent
+
+                                            agent = BioBrainAgent(api_key=current_api_key)
+
+                                            explanation = agent.explain_graph_element("关系连线", target_rel_label,
+                                                                                      local_ctx)
+
+                                            st.markdown("### 📝 AI 连线机制解读报告")
+
+                                            st.markdown(explanation)
