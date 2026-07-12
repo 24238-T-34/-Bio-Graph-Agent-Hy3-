@@ -11,6 +11,254 @@ import pandas as pd
 import uuid
 import re
 
+CONFIG_FILE = ".bio_graph_config.json"
+
+@st.dialog("📖 Bio-Graph Agent 操作指南", width="large")
+def show_help_dialog():
+    st.markdown(""" 
+    📖 Bio-Graph Agent 核心功能操作指南
+    欢迎使用 Bio-Graph Agent！这是一款专为生物医学研究者打造的“大模型科研军师”。
+    
+    🧬 基础图谱逻辑 (Graph Base Logic)：
+    本系统并非简单的“总结工具”，它会通过大语言模型深度阅读文献，抽取出结构化的“实体（节点）”与“调控关系（连线）”。当你分析多篇文献时，系统会自动进行实体语义对齐（例如将文献A中的 p53 和文献B中的 TP53 完美融合为同一个节点），从而将孤立的论文编织成一张具备交叉印证能力的全局动态知识网络！
+    
+    ⚙️ 一、 初始环境搭建 (侧边栏「更多设置」)
+    在使用前，请先展开左侧边栏的 ⚙️ 更多设置 进行基础环境配置：
+    
+    🌐 大模型引擎：选择 API 提供商并输入密钥。支持云端大模型，也支持离线隐私模式（选择 Ollama 即可在拔掉网线的情况下处理极密数据，免密钥运行）。
+    
+    📚 智能检索源：选择 PubMed (医学绝对权威) 或 Semantic Scholar (全科 AI 智能极速检索，自带降级防封机制)。
+    
+    🎛️ 界面功能开关：根据需要开启 📝 手动编辑面板 (用于剪枝) 与 🤖 AI 智能图谱分析 (用于洗树)。
+    
+    📂 二、 从零到一：构建知识图谱 (左侧控制栏)
+    在左侧 1. 文献输入与配置 面板，系统提供两种截然不同的起步方式：
+    
+    方式 A：💡 零基础冷启动 (Cold Start)
+    手头没有任何文献？完全没问题！
+    只要不在上方上传文件，你只需在输入框告诉 AI 你的研究方向（例如：“巨噬细胞极化在肿瘤微环境中的作用”）。
+    点击 “一键检索并生成初始图谱”，AI 将自动为你生成专业检索式，潜入数据库抓取最新文献，利用“滑动窗口”进行匹配度验证，并直接为你搭建出第一张初始知识图谱！
+    
+    方式 B：📄 本地文献精准解析
+    如果你已经有了 PDF 文件：
+    
+    上传文献：将单篇 PDF 拖入上传区（注意：每次仅支持解析一篇文献，但可以通过“追加模式”无限累加）。
+    
+    🎯 划定解析范围：通过控制起始页与终点页精准定位（例如仅解析含有核心机制图的第 3-5 页），极大节省时间和计算成本。
+    
+    ⚙️ 高级提取模式设置：
+    
+    ⚡ 仅提取摘要模式：极速模式，智能匹配摘要内容，仅分析摘要中核心关系。
+    
+    🔍 自我反思纠错：让 AI 充当独立质检员，二次核对剔除没有原文证据的“幻觉”节点，提高准确率。
+    
+    🔗 追加模式 (核心灵魂)：开启后，新解析的文献不会覆盖现有图谱，而是与之融合生长！关闭此项将清空现有图谱从零开始。
+    
+    🌐 实体命名规范：强制将所有图谱节点统一为纯中文或纯英文，拒绝中英混杂。
+    
+    点击 “🚀 开始解析 & 生成图谱”。
+    
+    🕸️ 三、 视觉赋权引擎 (主界面上方控制台)
+    图谱生成后，利用上方控制台的四大硬核视觉算法，可瞬间在一团乱麻中找出科研靶点：
+    
+    👁️ 机制捷径边：开启后，展现跨越中间节点的“直达捷径”，宏观审视上游到下游的最终影响。
+    
+    🧬 包含关系反哺 (Ontology Empower)：微观实体（如某特定蛋白）的权重反哺给其宏观父类，让重要的“激酶家族”或“信号通路”在图中自动变大。
+    
+    🔥 节点辐射度 (Node Empower)：基于图论连接度算法，与其他分子交互越多的“核心枢纽基因”，其节点体积会越显眼。
+    
+    🔗 主干通路加粗 (Edge Empower)：被多篇文献反复提及、证据链最坚固的调控连线会自动加粗，一眼看穿主流共识。
+    
+    模型会自动生成带关系的图谱，节点大小代表热度，而复杂的生物学通路进行了智能化归纳，每种颜色、线型和粗细都代表着特定的生物学意义：
+
+    🟢 绿色实线 + 箭头：代表 正作用 / 促进 / 激活 (Activation/Up-regulation)。例如：细胞因子刺激了某一信号通路的磷酸化。
+    
+    🔴 红色实线 + 箭头：代表 负作用 / 抑制 / 下调 (Inhibition/Down-regulation)。例如：某种 miRNA 降解了靶基因的 mRNA，或某药物抑制了受体活性。
+    
+    🟣 紫色实线 + 箭头：代表 包含 / 归属 / 组成关系 (Containment/Component)。例如：某个蛋白质属于某一复合物的核心亚基，或者某个受体属于某个超家族。
+    
+    ⚪ 灰色实线 / 无箭头：代表 一般关联 / 相关性 (Correlation/Interaction)。通常表示两者在文献中被共同提及，存在相互作用或协同现象，但尚未明确正负调控方向。
+    
+    ⚠️ 灰色虚线 (带有 [AI 判定为机制捷径] 标签)：
+    这是本智能体的特色算法。当 AI 检测到两条通路之间存在“跨级跳跃”时（例如文献中提到 A 激活了 C，但同时图中又存在 A -> B -> C 的细腻通路），系统会自动将粗放的 A -> C 标记为机制捷径（Shortcut），并将其变为灰色虚线，避免粗放关系干扰您对具体分子级联反应（Cascade）的精确分析。
+    
+    📐 连线粗细 (Width)：线越粗，代表两节点间的直接关联在文献中被提及或抽取的频次越高，属于图谱中的“主干骨架”。
+    
+    💾 四、 记忆库与工程管理 (左栏底部)
+    科研工作往往需要长期积累，Bio-Graph Agent 为此配备了专业的数据持久化与工程管理模块，确保你的每一次分析都能被安全存档与无缝恢复。
+    
+    在页面左侧边栏的最下方，你可以进行以下大盘操作：
+    
+    1. ✨ 新建空白工程
+    作用：当你准备开启一个全新的研究课题时，一键重置当前工作台。
+    
+    安全锁机制：由于此操作会彻底清空内存中的图谱与本地缓存，系统设计了二次防误触确认面板。点击后，你需要再次点击“🔴 确定清空”才会真正销毁数据。建议在执行此操作前，先将当前成果导出存档。
+    
+    2. 📤 导出工程 (.biokg)
+    作用：将当前辛勤搭建出的整张图谱（包含所有节点、连线、提取证据以及你的手动修改记录）打包下载到本地。
+    
+    格式说明：导出的文件为系统专属的 .biokg 格式（底层为标准 JSON）。它不仅是你个人的科研资产备份，还可以直接发送给你的同行或导师，让他们在自己的电脑上载入并继续审阅你的图谱。
+    
+    注：当图谱完全为空时，点击此按钮系统会进行轻量级拦截提示，防止导出空文件。
+    
+    3. 📥 载入历史工程 (.biokg / .json)
+    作用：打通科研的“读档”功能。将之前导出的 .biokg 工程文件拖拽至此，即可瞬间恢复历史工作状态。
+    
+    无缝渲染机制：
+    
+    为防止误覆盖当前进度，拖入文件后需要点击“🚀 确认载入该工程”才会真正执行替换。
+    
+    载入成功后，系统会在后台重新计算拓扑结构，并瞬间重绘出动态图谱。同时，上传面板会自动隐身清空（基于动态 Key 轮转技术），还你一个极度清爽的界面。
+    
+    🎯 总结建议
+    “每天搞科研，下班先导出”。利用好追加模式（累加新文献）与记忆库（存档当前进度），你可以将 Bio-Graph Agent 作为一个长期运行的超级大脑，在几个月的时间里，慢慢将几十上百篇文献，编织成一张价值连城的疾病与分子靶点网络！
+    
+    ✂️ 五、 专家手动干预 (右侧 "图谱数据管理中心")
+    无论 AI 多么强大，在严谨的科研图谱中，人类专家的专业判断永远拥有最高优先级。展开左侧边栏的 ⚙️ 核心引擎与检索设置，开启 📝 开启手动编辑面板，你将在右侧获得图谱的“上帝权限”。
+    
+    管理中心分为三大模块：
+    
+    1. ⚡ 快捷功能 (全局大盘管理)
+    🧹 一键清除孤立节点：点击后，系统会全盘扫描。只要某个节点既没有指向别人的线，也没有被别人指的线，就会被当做“孤立无援”的废弃节点一键清空。
+    
+    📝 批量修改文献/来源名：发现图谱中某篇 PDF 的名字太乱？在这里选中旧名字，输入新名字（如 Nature_2023_p53），系统会自动替换所有相关节点和连线的出处来源，确保溯源清晰。
+    
+    ➕ 手动添加节点：如果 AI 漏掉了一个极其核心的基因或蛋白，你可以在此手动输入其名称、别名和来源，直接将它强制加入画布。
+    
+    2. 🎯 节点操作 (精确打击)
+    在下拉菜单中搜索并选中你关心的某个节点，系统提供四种手术级别的操作：
+    
+    ✏️ 修改信息：重命名节点的标准名称，或增减它的别名。
+    
+    🧲 强制合并 (极其好用)：如果你发现图中有 p53 和 TP53 两个节点应该是一个东西。选中 p53，选择合并到 TP53。系统会瞬间将 p53 身上的所有连线转移给 TP53，并将两者的别名合并，最后销毁 p53。
+    
+    🔀 节点拆分：将一个笼统的节点（如 突变型与野生型p53）硬拆成两个独立的新节点。最绝的是，系统会列出原来节点身上的每一条连线，让你逐一分配这条线是给新节点A、给新节点B、复制给两者，还是直接丢弃。
+    
+    🗑️ 危险删除：彻底销毁该节点，并连带拔除所有与它有关的调控连线。
+    
+    3. 🔗 关系操作 (连线修剪与搭桥)
+    在下拉菜单中分别选定图上的 起点节点 A 和 终点节点 B，系统会帮你找出它们之间的所有羁绊：
+    
+    ✏️ 管理已有连线：
+    
+    逆转方向：如果发现 AI 把上游和下游搞反了，可以一键反转箭头方向。
+    
+    修改性质：将关联类型在标准词汇（正作用、负作用、相关）中切换，并可修改其原文证据和来源。
+    
+    🚨 斩断连线：对于文献中提取出的毫无意义的背景介绍或假阳性，点击删除，该连线会彻底从图谱中抹除。
+    
+    ➕ 新增一条连线：文献中没提到但你凭借背景知识确认 A 促进了 B？直接选择由谁指向谁、定好关系类型，手动建立这座隐秘的桥梁。
+    
+    🤖 六、 AI 智能图谱工具 (右侧专属面板)
+    如果说“手动编辑面板”是你的手术刀，那么 AI 智能图谱工具 就是你的“超级智囊团”。在右侧面板选择对应的 AI 模块，你可以让大模型深度介入图谱的清洗、生长与解读。
+    
+    1. 🧹 智能洗树 (Pruning)
+    当你导入了大量文献，图谱往往会变得庞杂且存在冗余。洗树模块提供两种强大的自动化清洗能力：
+    
+    🔍 拓扑结构智能诊断：
+    
+    点击“开始 AI 智能诊断图谱”，大模型将通读全图谱的连线逻辑，并生成一份“审查清单”。
+    
+    合并同义词 (Merge)：AI 会揪出漏网的同义节点，建议将其合并。
+    
+    建立层级 (Hierarchy)：AI 发现某些节点是包含关系时（例如 A 属于 B 家族），会建议将模糊的“相关”连线修正为精确的“包含”关系。
+    
+    降级捷径边 (Downgrade)：AI 识别出跨越多个层级的宽泛结论连线，建议将其降级为虚线，以突出主干机制。
+    
+    执行操作：在生成的清单中勾选你认可的建议，点击一键执行，图谱将瞬间完成重组与权重叠加！
+    
+    ✂️ 意图节点清洗 (Intent-Based Pruning)：
+    
+    痛点：文献中经常提到你根本不关心的其他疾病或器官（例如你只研究“肺癌”，但提取出了“肝损伤”）。
+    
+    操作：在文本框内用大白话输入你的“核心研究方向”。AI 会像审稿人一样，逐一排查图谱中的节点及邻居，为你罗列出一份“偏题节点处决名单”（标注风险等级和判定依据）。
+    
+    确认无误后点击“处决”，这些无关节点及牵连的连线将被彻底从画布上抹杀，还你一个极度纯净的主题图谱。
+    
+    2. 🔍 智能拓展 (Smart Expansion)
+    突破现有文献的边界，让图谱“自我生长”！当你发现图谱有个重要的分支需要深挖时：
+    
+    🎯 选定锚点与检索策略：选择图谱中 1-3 个核心节点，并挂载检索引擎：
+    
+    直接搜索：极速纯文本匹配。
+    
+    智能搜索：AI 扩充同义词与主题词进行外网检索。
+    
+    背景搜索 (最强)：AI 会先阅读这几个节点在当前图谱里的“已知关系”，然后顺藤摸瓜生成最高级的专业检索式。
+    
+    📑 筛选入库：系统会拉取外网最新文献并生成表格，勾选你认为有价值的文献，将其送入“解析队列”。
+    
+    ⚙️ 自动化融合队列 (无人值守模式)：
+    
+    进入控制台，你可以单步点击“解析并融合本篇”或“跳过”。
+    
+    🔥 开启连续自动解析：你可以打开自动巡航开关，然后去喝杯咖啡。系统会自动排队抓取、阅读每一篇文献，并将新提取的节点与图谱现有节点进行“完美对齐与熔接”。回来时，你的图谱已经长成了一棵参天大树！
+    
+    3. 🔗 智能桥接 (Bridging)
+    寻找潜藏科研靶点的终极利器。当你在图谱中对 A 和 B 两个分子的关系感到好奇时：
+    
+    选中节点 A 和 节点 B。
+    
+    如果图中已有间接路径：AI 会瞬间遍历网络，为你梳理出“A 是如何通过 X 和 Y 最终影响 B”的多步传导路径，并生成连贯的机制报告。
+    
+    如果是孤岛或无直接联系：系统判定它们断链后，会自动生成检索任务，呼叫外网大模型去强行挖掘 A 与 B 之间在最新前沿文献中是否已被证实存在关联，直接为你寻找写本子（基金申报）的创新灵感！
+    
+    4. 🤖 问 AI
+    图谱的“随身微观解说员”：
+    
+    当你面对错综复杂的图谱，不知道某条连线究竟代表什么生化反应时。
+    
+    直接在图谱中选中该“节点”或“连线”，系统会将这部分的微上下文（包括原文提取依据、文献来源出处）喂给大模型。
+    
+    AI 将为你生成一篇极其详实的“局部机制解读报告”，告诉你这条线在原文中到底讲了什么故事。
+    
+    """)
+
+def load_config():
+    """在应用初次加载时，读取本地配置并注入到 session_state 中"""
+    if "config_loaded" not in st.session_state:
+        # 1. 设定需要持久化的默认值（去掉了所有绘图相关的选项）
+        default_config = {
+            "api_provider": "OpenRouter (国际节点)",
+            "custom_base_url": "https://api.openai.com/v1",
+            "selected_model_name": "Hunyuan 3 Preview (预览版 - 高性价比)",  # 记录下拉框的选择名称
+            "custom_model_id": "",  # 用于 Ollama 等自定义手填的模型
+            "search_database": "PubMed (生物医学权威)",
+            "is_summary_only": False,
+            "use_reflection": True,
+            "append_mode": True,
+            "entity_language": "关闭 (保持原文语言)",
+            "ENABLE_EDITOR": True,  # ✨ 恢复的开关 1
+            "ENABLE_AI_CLEANER": True  # ✨ 恢复的开关 2
+        }
+
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+                    local_config = json.load(f)
+                    default_config.update(local_config)
+            except Exception as e:
+                print(f"读取本地配置失败: {e}")
+
+        for k, v in default_config.items():
+            if k not in st.session_state:
+                st.session_state[k] = v
+
+        st.session_state.config_loaded = True
+
+
+def save_config():
+    """仅保存核心业务设置，忽略绘图参数"""
+    config_keys = [
+        "api_provider", "custom_base_url", "selected_model_name", "custom_model_id",
+        "search_database", "is_summary_only", "use_reflection", "append_mode",
+        "entity_language", "ENABLE_EDITOR", "ENABLE_AI_CLEANER"  # ✨ 添加这两个开关
+    ]
+    # 注意：这里已经没有 empower_ontology 等绘图参数了
+    config_to_save = {k: st.session_state[k] for k in config_keys if k in st.session_state}
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(config_to_save, f, indent=4)
+
 
 def redraw_and_update():
     from back_logic import GraphVisualizer
@@ -57,7 +305,16 @@ def redraw_and_update():
 # 页面全局配置
 # ==========================================
 st.set_page_config(page_title="Bio-Graph Agent", page_icon="🧬", layout="wide")
-st.title("🧬 混元 Hy3 生物知识图谱自动生成引擎")
+title_col, btn_col = st.columns([5, 1])
+with title_col:
+    st.title("🧬 混元 Hy3 生物知识图谱自动生成引擎")
+with btn_col:
+    # 稍微往下挤一点点（用一行空行），让按钮在垂直方向上和标题的文字居中对齐
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    # 渲染帮助按钮，点击即触发上面的弹窗函数
+    if st.button("❓ 帮助与说明", use_container_width=True, type="secondary"):
+        show_help_dialog()
 st.markdown("---")
 # 📁 创建一个持久化文件夹，用来保存所有分析过的原文
 HISTORY_DIR = ".history_docs"
@@ -79,23 +336,89 @@ if "pubmed_search_results" not in st.session_state:
 if "analyzed_files" not in st.session_state:
     st.session_state.analyzed_files = []
 
-append_mode = True
+load_config()
+
+#append_mode = True
 # ==========================================
 # 侧边栏配置：核心 API 和模型选择
 # ==========================================
 
 
 with st.sidebar:
-    st.header("⚙️ 引擎配置")
-    api_key = st.text_input("OpenRouter API Key", value="", type="password")
+    st.markdown("## 🧬 Bio-Graph Agent")
+    st.markdown("---")
+    is_local = "Ollama" in st.session_state.get("api_provider", "")
+    api_key_placeholder = "Ollama 免密运行，可留空" if is_local else "🔑 请输入您的 API Key"
 
-    model_options = {
-        "Hunyuan 3 Preview (预览版 - 高性价比)": "tencent/hy3-preview",
-        "Hunyuan 3 (正式版 - 最强推理)": "tencent/hy3",
-        "Hunyuan 3 Free (免费版 - 易被限流)": "tencent/hy3:free"
-    }
-    selected_model_name = st.selectbox("🧠 选择底层驱动模型", list(model_options.keys()))
-    selected_model_id = model_options[selected_model_name]
+    api_key = st.text_input("API Key", type="password",
+                            label_visibility="collapsed",
+                            placeholder=api_key_placeholder,
+                            help="刷新即焚，不会本地留存。")
+    if is_local and not api_key:
+        api_key = "dummy-key-for-ollama"
+
+    st.markdown("---")
+
+    with st.popover("⚙️ 更多设置", use_container_width=True):
+        st.markdown("#### 🌐 大模型引擎")
+
+        api_providers_map = {
+            "OpenRouter (国际节点)": "https://openrouter.ai/api/v1",
+            "腾讯云 (官方兼容接口)": "https://api.hunyuan.cloud.tencent.com/v1",
+            "硅基流动 (国内极速)": "https://api.siliconflow.cn/v1",
+            "Ollama (本地断网运行)": "http://localhost:11434/v1",
+            "自定义 (Custom)": "custom"
+        }
+
+        st.selectbox("API 提供商", list(api_providers_map.keys()), key="api_provider", on_change=save_config)
+
+        if st.session_state.api_provider == "自定义 (Custom)":
+            base_url = st.text_input("🔗 Base URL", key="custom_base_url", on_change=save_config)
+        else:
+            base_url = api_providers_map[st.session_state.api_provider]
+
+        # ✨ 修复与升级：智能模型选择逻辑
+        is_local_or_custom = "Ollama" in st.session_state.api_provider or "自定义" in st.session_state.api_provider
+
+        if is_local_or_custom:
+            # 对于本地或自定义源，只能手填模型 ID
+            selected_model_id = st.text_input("🧠 模型 ID (如 qwen2.5:7b)", key="custom_model_id", on_change=save_config)
+        else:
+            # 对于云端源，使用你极其优雅的字典映射
+            model_options = {
+                "Hunyuan 3 Preview (预览版 - 高性价比)": "tencent/hy3-preview",
+                "Hunyuan 3 (正式版 - 最强推理)": "tencent/hy3",
+                "Hunyuan 3 Free (免费版 - 易被限流)": "tencent/hy3:free"
+            }
+            # UI显示的是 keys，存进 config 的是 selected_model_name
+            st.selectbox("🧠 选择底层驱动模型", list(model_options.keys()), key="selected_model_name", on_change=save_config)
+            # 实际传给下游 Pipeline 或 Agent 的 ID
+            selected_model_id = model_options[st.session_state.selected_model_name]
+
+        st.divider()
+        st.markdown("#### 📚 智能检索源")
+        db_sources = ["PubMed (生物医学权威)", "Semantic Scholar (全科AI智能)"]
+        st.selectbox("数据库", db_sources, key="search_database", on_change=save_config)
+
+        st.divider()
+
+        # ✨ 恢复：功能模块开关
+        st.markdown("#### 🎛️ 界面功能开关")
+        ENABLE_EDITOR = st.toggle("📝 开启手动编辑面板", key="ENABLE_EDITOR", on_change=save_config)
+        ENABLE_AI_CLEANER = st.toggle("🤖 开启 AI 智能图谱分析", key="ENABLE_AI_CLEANER", on_change=save_config)
+
+        st.divider()
+        with st.expander("🤝 联系我们 / 了解更多"):
+            st.markdown("""
+            **Bio-Graph Agent** 致力于将大语言模型与生物知识图谱无缝融合。
+            
+            - 🐛 发现 Bug？
+            - 💡 有绝妙的新功能想法？
+            - 🌟 觉得好用的话，来给我们点个 Star 吧！
+            """)
+            st.link_button("⭐ 访问 Github 仓库", "https://github.com/24238-T-34/-Bio-Graph-Agent-Hy3-", use_container_width=True)
+            st.caption("📧 合作邮箱: zoyuhandd@126.com")
+
 
 #    st.markdown("---")
 
@@ -150,10 +473,16 @@ with left_col:
                 st.warning("⚠️ 请输入你想研究的内容！")
             else:
                 from LLM_SYS import BioBrainAgent
-                from WebSearcher import PubMedSearcher
+                from WebSearcher import get_searcher
+
+                # 💡 从我们刚刚写好的设置里，读取用户选择的数据库
+                current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
+
+                # 🚀 工厂模式根据名字自动返回对应的搜索器！
+                searcher = get_searcher(current_db)
 
                 agent = BioBrainAgent(api_key=current_api_key)
-                searcher = PubMedSearcher()
+
 
                 with st.spinner("🤖 AI 正在生成专业检索式..."):
                     query = agent.generate_topic_query(user_topic)
@@ -245,16 +574,17 @@ with left_col:
 
     st.subheader("⚙️ 2. 提取模式设置")
     # 🔥 全新进阶功能：可开关的“仅摘要模式”
-    is_summary_only = st.toggle("⚡ 仅提取摘要模式 (速度极快)", value=False)
-    use_reflection = st.toggle("🔍 启用自我反思纠错 (提高准确率，但更耗时)", value=True)
-
-    append_mode = st.toggle("🔗 追加模式 (将本次提取结果叠加到现有图谱)", value=True)
+    is_summary_only = st.toggle("⚡ 仅提取摘要模式 (速度极快)", key="is_summary_only", on_change=save_config)
+    use_reflection = st.toggle("🔍 启用自我反思纠错", key="use_reflection", on_change=save_config)
+    append_mode = st.toggle("🔗 追加模式 (叠加到现有图谱)", key="append_mode", on_change=save_config)
 
     st.markdown("#### 🌐 实体命名规范")
     entity_language = st.radio(
         "强制统一图谱主节点（实体）的输出语言：",
         options=["关闭 (保持原文语言)", "中文 (强制翻译为中文)", "English (强制翻译为英文)"],
         index=0,
+        key="entity_language",
+        on_change=save_config,
         horizontal=True
     )
 
@@ -780,7 +1110,7 @@ if st.session_state.show_results and st.session_state.html_data:
     # ==========================================
     # 🎛️ 终极图谱数据管理中心
     # ==========================================
-    ENABLE_EDITOR = True
+
 
     if ENABLE_EDITOR and len(st.session_state.master_entities) > 0:
         st.subheader("🎛️ 图谱数据管理中心")
@@ -1233,7 +1563,7 @@ if st.session_state.show_results and st.session_state.html_data:
     # ==========================================
     # 🤖 AI 智能图谱清洗中心 (真机驱动版)
     # ==========================================
-    ENABLE_AI_CLEANER = True
+
 
     if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
         st.markdown("---")
@@ -1559,9 +1889,13 @@ if st.session_state.show_results and st.session_state.html_data:
                     st.warning("⚠️ 请先在上方选择至少一个节点！")
                 else:
                     with st.spinner("🌐 正在生成策略并呼叫 PubMed API 获取最新文献..."):
-                        from WebSearcher import PubMedSearcher
+                        from WebSearcher import get_searcher
 
-                        searcher = PubMedSearcher()
+                        # 💡 从我们刚刚写好的设置里，读取用户选择的数据库
+                        current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
+
+                        # 🚀 工厂模式根据名字自动返回对应的搜索器！
+                        searcher = get_searcher(current_db)
                         query = ""
 
                         # ⚡ 模式 1：纯 Python 暴力拼接（不调大模型）
@@ -1702,12 +2036,18 @@ if st.session_state.show_results and st.session_state.html_data:
                                 # 带来的神级体验：用户在侧边栏补上 API Key 的瞬间，自动化引擎会自动检测并【继续无缝向下跑】，极其丝滑！
                                 st.stop()
 
-                            from WebSearcher import PubMedSearcher
+                            from WebSearcher import get_searcher
+
+                            # 💡 从我们刚刚写好的设置里，读取用户选择的数据库
+                            current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
+
+                            # 🚀 工厂模式根据名字自动返回对应的搜索器！
+                            searcher = get_searcher(current_db)
                             from LLM_SYS import BioBrainAgent
                             import datetime
                             import os
 
-                            searcher = PubMedSearcher()
+
                             agent = BioBrainAgent(api_key=current_api_key)
 
                             with st.spinner(f"⏳ 正在深度解析并提取 {pmid} 的知识..."):
@@ -1930,7 +2270,7 @@ if st.session_state.show_results and st.session_state.html_data:
                         else:
                             with st.spinner("🧠 AI 正在评估并生成专属检索策略..."):
                                 from LLM_SYS import BioBrainAgent
-                                from WebSearcher import PubMedSearcher
+                                from WebSearcher import get_searcher
 
                                 agent = BioBrainAgent(api_key=current_api_key)
                                 query = agent.generate_bridge_query(node_a, node_b)
@@ -1940,7 +2280,10 @@ if st.session_state.show_results and st.session_state.html_data:
                                         f"🛑 **AI 驳回请求**：根据现有生命科学常识，【{node_a}】和【{node_b}】之间没有合理的生物学机制交集。")
                                 else:
                                     st.info(f"💡 **检索策略**: `{query}`")
-                                    searcher = PubMedSearcher()
+                                    current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
+
+                                    # 🚀 工厂模式根据名字自动返回对应的搜索器！
+                                    searcher = get_searcher(current_db)
                                     results = searcher.search_articles(query, max_results=6)  # 搜前6篇
 
                                     if not results:
@@ -1983,10 +2326,13 @@ if st.session_state.show_results and st.session_state.html_data:
                             st.warning("⚠️ 请至少勾选一篇文献供 AI 阅读！")
                         else:
                             with st.spinner("📚 正在后台秒传摘要并进行跨文献机制缝合..."):
-                                from WebSearcher import PubMedSearcher
+                                from WebSearcher import get_searcher
                                 from LLM_SYS import BioBrainAgent
 
-                                searcher = PubMedSearcher()
+                                current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
+
+                                # 🚀 工厂模式根据名字自动返回对应的搜索器！
+                                searcher = get_searcher(current_db)
                                 agent = BioBrainAgent(api_key=api_key.strip())
 
                                 combined_abstracts = ""
