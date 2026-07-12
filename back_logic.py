@@ -45,12 +45,16 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)"):
+    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",progress_callback=None):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
         current_source = os.path.basename(pdf_path)
 
         print(f"📌 [Pipeline] 当前处理文献来源已锁定: {current_source}")
+
+        def report_progress(current_step, total_steps, msg):
+            if progress_callback:
+                progress_callback(current_step, total_steps, msg)
 
         # ---------------------------------------------------------
         # 🚀 模式一：仅摘要模式 (混合双打流)
@@ -58,6 +62,7 @@ class BioGraphPipeline:
         if is_summary_only:
             # start_page 在前端传过来时减了1，这里加1是为了人类阅读直观
             print(f"⚡ 开启摘要模式，仅在第 {start_page + 1} 到 {end_page} 页中寻找摘要...")
+            report_progress(0.1, 1.0, "⚡ [初始化] 开启摘要模式，正在正则扫描第 {start_page + 1} 到 {end_page}...")
 
             # 注意：这里的 raw_text 已经严格限制在了用户选定的页码范围内！
             raw_text = self.processor.get_raw_text(pdf_path, start_page, end_page)
@@ -68,6 +73,7 @@ class BioGraphPipeline:
 
             if abstract_text:
                 print(f"🔍 正则成功捕获疑似摘要 (长度: {len(abstract_text)})，请求大模型质检...")
+                report_progress(0.3, 1.0, "🔍 [质检中] 正则捕获疑似摘要，请求大模型进行内容质检...")
                 verified = self.agent.verify_and_clean_abstract(abstract_text)
                 if "[NOT_ABSTRACT]" not in verified:
                     final_text = verified
@@ -78,6 +84,7 @@ class BioGraphPipeline:
             # 2. 终极兜底：让大模型在选定的页码文本 (raw_text) 中硬找
             if not final_text:
                 print("⚠️ 启动大模型全量兜底搜索 (范围仅限选定页码)...")
+                report_progress(0.5, 1.0, "⚠️ [兜底搜索] 启动大模型全量兜底寻找摘要区块...")
                 fallback_result = self.agent.fallback_extract_abstract(raw_text)
                 if "[NOT_ABSTRACT]" not in fallback_result:
                     final_text = fallback_result
@@ -108,13 +115,23 @@ class BioGraphPipeline:
 
         # 2. 循环流水线处理
         for idx, chunk in enumerate(chunks):
-            print(f"\n🧠 [Pipeline] 正在处理第 {idx + 1}/{len(chunks)} 个文本块...")
+            # 计算当前属于整体进度的百分之多少
+            base_progress = idx / total_chunks
+            chunk_weight = 1.0 / total_chunks  # 每个 chunk 占的比例
 
+            print(f"\n🧠 [Pipeline] 正在处理第 {idx + 1}/{len(chunks)} 个文本块...")
+            msg1 = f"🧠 [文本块 {idx + 1}/{total_chunks}] [Step 1/2] 正在深度提取实体..."
+            report_progress(base_progress + chunk_weight * 0.2, 1.0, msg1)
             chunk_entities = self.agent.extract_entities_with_reflection(chunk,use_reflection=use_reflection,entity_lang=entity_lang)
             self._merge_entities(chunk_entities)
 
+
             for ent in chunk_entities:
                 ent["doc_source"] = source_name
+
+            msg2 = f"🔗 [文本块 {idx + 1}/{total_chunks}] [Step 2/2] 正在推演实体间的网络调控关系..."
+            # 假设关系抽取开始时，进度推到本块的 60%
+            report_progress(base_progress + chunk_weight * 0.6, 1.0, msg2)
 
             chunk_relations = self.agent.extract_relations(chunk, self.global_entities)
             self._merge_relations(chunk_relations)
@@ -129,6 +146,7 @@ class BioGraphPipeline:
 
         # 3. 可视化
         # self.visualizer.generate_html(self.global_entities, self.global_relations)
+        report_progress(1.0, 1.0, f"✨ 分析完毕！本轮共捕获 {len(self.global_entities)} 个实体，{len(self.global_relations)} 条关系。")
         return self.global_entities, self.global_relations
 
 

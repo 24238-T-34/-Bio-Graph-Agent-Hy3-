@@ -514,8 +514,24 @@ if uploaded_file and start_button:
             # 实例化 Pipeline 并传入动态模型
             pipeline = BioGraphPipeline(api_key=api_key, model=selected_model_id)
 
+
+
             # 🟢 阶段一：独立的解析转圈
             with st.spinner(f"🧠 智能体正在解析第 {start_page} 到 {end_page} 页..."):
+
+                # ✨ 新增 1：在前端画布准备好一个进度条组件
+                ui_progress_bar = st.progress(0.0, text="🚀 正在启动知识图谱自动化构建引擎...")
+
+
+                # ✨ 新增 2：定义一个“监听器”函数 (结合了进度条和气泡)
+                def update_ui_progress(current, total, message):
+                    # 计算安全百分比 (0.0 到 1.0 之间)
+                    percent = min(max(current / total, 0.0), 1.0)
+                    # 更新进度条
+                    ui_progress_bar.progress(percent, text=message)
+                    # 弹出右上角气泡 (模拟后端日志流)
+                    st.toast(message, icon="⏳")
+
                 # 1. 跑当前这篇文献，拿到新数据
                 new_entities, new_relations = pipeline.run(
                     tmp_path,
@@ -524,7 +540,8 @@ if uploaded_file and start_button:
                     is_summary_only=is_summary_only,
                     use_reflection=use_reflection,
                     source_name=uploaded_file.name,
-                    entity_lang = entity_language
+                    entity_lang = entity_language,
+                    progress_callback=update_ui_progress
                 )
 
             # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)
