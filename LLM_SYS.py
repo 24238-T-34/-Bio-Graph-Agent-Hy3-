@@ -259,12 +259,12 @@ class BioBrainAgent:
             print(f"    ⚠️ [Entity Aligner] 实体对齐解析失败，跳过融合: {e}")
             return {}
 
-    def diagnose_graph(self, entities, relations):
+    def diagnose_graph(self, entities, relations,output_lang="zh"):
         """🤖 核心引擎：AI 图谱智能洗树 (检测同义词、层级与捷径边)"""
         if not entities or not relations:
             return []
-
-        prompt = """你是一个顶级的生物医药知识图谱架构师。
+        lang_str = "中文" if "zh" in output_lang else "English"
+        prompt = f"""你是一个顶级的生物医药知识图谱架构师。
         我将提供一份当前图谱的【实体列表】和【关系连线列表】（包含起点、终点、关系类型和原文证据）。
         请你根据原文证据进行“图谱洗树（Graph Pruning & Merging）”，并返回结构化的 JSON 操作指令。
 
@@ -276,11 +276,15 @@ class BioBrainAgent:
 
         请严格只输出一个合法的 JSON 数组，格式如下（可返回多条指令）：
         [
-          {"action": "MERGE", "target_node": "保留的标准实体", "nodes_to_remove": ["要删掉的冗余实体"], "reason": "说明"},
-          {"action": "HIERARCHY", "parent": "父节点名称", "child": "子节点名称", "reason": "说明"},
-          {"action": "REMOVE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "越级层级冗余，需彻底删除"},
-          {"action": "DOWNGRADE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "机制捷径降级"}
+          {{"action": "MERGE", "target_node": "保留的标准实体", "nodes_to_remove": ["要删掉的冗余实体"], "reason": "说明"}},
+          {{"action": "HIERARCHY", "parent": "父节点名称", "child": "子节点名称", "reason": "说明"}},
+          {{"action": "REMOVE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "越级层级冗余，需彻底删除"}},
+          {{"action": "DOWNGRADE", "source": "起点名称", "target": "终点名称", "relation": "关系词", "reason": "机制捷径降级"}}
         ]
+        🚨 【强制输出语言与字段隔离指令】：
+        1. 🚨 【键名与枚举冻结】：你必须严格保持 JSON 的所有键名（如 'action', 'reason'）为英文！同时，'action' 字段的值必须【严格保持】为模板中指定的英文大写枚举值（MERGE, HIERARCHY, REMOVE, DOWNGRADE），绝对不允许翻译或改成其他词！
+        2. 🚨 【节点名称原样对齐】：JSON 中涉及的所有实体/节点名称（如 'target_node', 'nodes_to_remove', 'parent', 'child', 'source', 'target' 等字段的值），必须与我提供给你的输入列表中的名称【完全保持一模一样，原样返回】，绝对不允许翻译或改变字面！
+        3. 🌐 【唯一允许翻译的字段】：【只有】'reason'（解释/说明）字段的内容，需要根据当前要求，严格使用【{lang_str}】来编写和表达。
         绝对不要输出任何其他解释文字！
         """
 
@@ -335,11 +339,12 @@ class BioBrainAgent:
         print(f"🎯 [Agent] 生成的检索式: {query}")
         return query
 
-    def explain_mechanism(self, node_a, node_b, paths_data):
+    def explain_mechanism(self, node_a, node_b, paths_data,output_lang="zh"):
         """
         分支一专用：根据图谱中找到的多步路径，推导深层机制
         """
-        system_prompt = """你是一个顶级的分子生物学家和系统生物学专家。
+        lang_str = "中文" if "zh" in output_lang else "English"
+        system_prompt = f"""你是一个顶级的分子生物学家和系统生物学专家。
         用户将提供从现有知识图谱中提取的，连接【起点实体】和【终点实体】的多条拓扑路径及对应的文献证据碎片。
         你的任务是：仔细阅读这些跨文献的证据碎片，将它们串联起来，进行全局视角的生物学逻辑推导，生成一份专业的【跨文献分子机制桥接报告】。
 
@@ -349,6 +354,7 @@ class BioBrainAgent:
         3. 🛡️ 【可信度与审计】：必须明确引用路径数据中的 doc_source（文献来源）。
         4. 💡 【新发现暗示】：如果有明显的跨文献拼图（例如文献1证明A调控C，文献2证明C调控B），请特别高亮指出这可能是一个具有研究价值的串联新机制。
 
+        🚨 【强制输出语言指令】：你必须严格使用【{lang_str}】输出整篇报告（包含所有的标题、正文和列表）。如果要求的语言是 English，请你自动将报告模板中的中文标题全部翻译为英文。
         全程使用优美的 Markdown 格式输出。
         """
         user_content = f"起点实体：{node_a}\n终点实体：{node_b}\n\n【提取到的拓扑路径与证据碎片】：\n{json.dumps(paths_data, ensure_ascii=False)}"
@@ -457,12 +463,13 @@ class BioBrainAgent:
         raw_response = self._ask_llm(system_prompt, user_content)
         return self._clean_json_string(raw_response)
 
-    def evaluate_abstracts_relevance(self, user_topic, abstracts_text):
+    def evaluate_abstracts_relevance(self, user_topic, abstracts_text,output_lang="zh"):
         """
         冷启动反思模块：检查抓取回来的文献摘要是否符合意图。
         【核心技巧】：在 JSON 中强制要求先输出 reason，再输出 is_relevant，通过思维链 (CoT) 大幅提升判断准确率。
         """
-        system_prompt = """你是一个宽容的知识图谱构建助手。
+        lang_str = "中文" if "zh" in output_lang else "English"
+        system_prompt = f"""你是一个宽容的知识图谱构建助手。
         你需要评估检索到的文献摘要，是否有助于为用户的研究意图构建【初始图谱】。
 
         【🟢 核心放行标准 (局部命中 = 完美)】：
@@ -474,10 +481,14 @@ class BioBrainAgent:
         只有当这些文献与用户的各个切片【完全无关】（例如全都是讲植物、或者全都是毫无细胞机制的流行病学调查）时，才驳回。
 
         请严格返回如下 JSON 格式：
-        {
+        {{
             "reason": "请说明该文献命中了用户宏大假说中的哪一个局部切片（说明为什么放行）。严禁抱怨文献没有覆盖全链条！",
             "is_relevant": true 或 false
-        }
+        }}
+        🚨 【强制输出语言与字段隔离指令】：
+        1. 🚨 【键名与布尔值冻结】：你必须严格保持 JSON 的所有键名（'reason', 'is_relevant'）为英文！同时，'is_relevant' 字段的值必须【严格保持】为标准的 JSON 布尔值（true 或 false），绝对不允许加引号，也不允许翻译成其他文字！
+        2. 🌐 【唯一允许翻译的字段】：【只有】'reason'（解释/说明）字段的内容，需要结合文献内容，严格使用【{lang_str}】来编写和表达。
+        
         """
         user_content = f"【用户研究意图】：{user_topic}\n\n【检索到的文献摘要】：\n{abstracts_text}"
 
@@ -488,12 +499,14 @@ class BioBrainAgent:
             return json.loads(cleaned_json)
         except Exception as e:
             print(f"❌ [Agent] 相关性评估 JSON 解析失败: {e}")
-            return {"reason": "解析大模型输出失败，默认放行。", "is_relevant": True}
+            default_reason = "解析大模型输出失败，默认放行。" if "中文" in lang_str else "Failed to parse LLM output, passing by default."
+            return {"reason": default_reason, "is_relevant": True}
 
-    def prune_nodes_by_intent(self, user_intent, entities, relations):
+    def prune_nodes_by_intent(self, user_intent, entities, relations,output_lang="zh"):
         """
         基于意图的智能剪枝：让大模型根据用户的研究兴趣，揪出无关的“杂草”节点。
         """
+        lang_str = "中文" if "zh" in output_lang else "English"
         # 构建带有拓扑上下文的轻量级节点字典，节省 Token 并提供判断依据
         node_context = []
         for ent in entities:
@@ -510,7 +523,7 @@ class BioBrainAgent:
 
         context_str = "\n".join(node_context)
 
-        system_prompt = """你是一个严谨且果断的生物医学知识图谱清理专家。
+        system_prompt = f"""你是一个严谨且果断的生物医学知识图谱清理专家。
         当前图谱在构建过程中不可避免地引入了一些偏离主题的节点（噪音）。你需要根据用户提供的【核心研究方向】，对下列所有节点逐一进行严格审视。
 
         【风险等级标准】：
@@ -521,12 +534,17 @@ class BioBrainAgent:
 
         请返回 JSON 数组格式（仅包含前三种风险级别的节点），格式如下：
         [
-            {
+            {{
                 "node_name": "被判定的节点名称",
                 "risk_level": "完全无关/可能无关/关联度低",
                 "reason": "请结合其邻居信息，简短说明为什么该节点偏离了用户的研究意图"
-            }
+            }}
         ]
+        
+        🚨 【强制输出语言与字段隔离指令】：
+        1. 🚨 【键名与枚举冻结】：你必须严格保持 JSON 的所有键名（如 'node_name', 'risk_level', 'reason'）为英文！同时，'risk_level' 字段的值必须【严格保持】为指定英文枚举值（Completely_Irrelevant, Potentially_Irrelevant, Low_Relevance），绝对不允许翻译成中文或其他格式！
+        2. 🚨 【节点名称原样对齐】：'node_name' 字段的值必须与输入的图谱节点名称【完全保持一模一样】，无论是大小写、空格还是语言，绝对不允许进行任何翻译或擅自改动！
+        3. 🌐 【唯一允许翻译的字段】：【只有】'reason'（原因说明）字段的内容，需要结合邻居和用户意图，严格使用【{lang_str}】来编写输出。
 
         ⚠️ 严禁输出任何多余的解释，严禁使用 Markdown 代码块，只能输出纯粹的 JSON 数组！如果所有节点都极其完美相关，请返回空数组 []。
         """
@@ -542,11 +560,12 @@ class BioBrainAgent:
             print(f"❌ [Agent] 节点清洗 JSON 解析失败: {e}")
             return []
 
-    def explain_graph_element(self, element_type, element_name, local_context):
+    def explain_graph_element(self, element_type, element_name, local_context,output_lang="zh"):
         """
         Ask AI 核心模块：为选中的图谱节点或关系提供专业且锚定上下文的解读。
         【终极完全体 + 动态分流】：区分节点和关系的模板逻辑。
         """
+        lang_str = "中文" if "zh" in output_lang else "English"
         # ✨ 根据传入的类型，动态组装不同的排版紧身衣
         if element_type == "节点":
             template_block = """
@@ -591,6 +610,7 @@ class BioBrainAgent:
 
         {template_block}
 
+        🚨 【强制输出语言指令】：你必须严格使用【{lang_str}】输出整篇解读报告。在生成最终内容时，如果要求的语言是 English，请你动态将 <OUTPUT_TEMPLATE> 模板里的所有中文标题（如“概念解析”等）翻译为地道的英文标题。
         ⚠️ 请立刻输出填充后的模板内容，不要包含 <OUTPUT_TEMPLATE> 标签本身，绝对不要使用 # 或 ## 标题！
         """
 

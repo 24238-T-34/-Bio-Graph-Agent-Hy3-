@@ -91,11 +91,25 @@ class GraphVisualizer:
                       show_shortcuts=False,
                       empower_ontology=False, alpha_ontology=0.5,
                       empower_node=False, beta_node=0.2,
-                      empower_edge=False, gamma_edge=0.1):
+                      empower_edge=False, gamma_edge=0.1,
+                      output_lang="zh"):
         print(f"🎨 [GraphVisualizer] 正在绘制动态网络拓扑图...")
         from pyvis.network import Network
         from collections import Counter
         import os
+
+        # 🌐 悬停面板双语词典
+        is_en = "en" in output_lang.lower()
+        lbl_std_name = "🏷️ Standard Name" if is_en else "🏷️ 标准名称"
+        lbl_aliases = "📚 Aliases" if is_en else "📚 别名"
+        lbl_source = "📄 Source" if is_en else "📄 来源文献"
+        lbl_heat = "🔥 Overall Heat" if is_en else "🔥 综合热度"
+        lbl_weight = "🔥 Merge Count" if is_en else "🔥 证据合并次数"
+        lbl_times = "times" if is_en else "次"
+        lbl_rel = "🔍 Relation Type" if is_en else "🔍 关系类型"
+        lbl_evi = "📝 Evidence" if is_en else "📝 证据"
+        lbl_doc_src = "📄 Source" if is_en else "📄 源自"
+        lbl_shortcut = "⚠️ [AI judged as mechanism shortcut]" if is_en else "⚠️ [AI 判定为机制捷径]"
 
         # 🔥 绝杀修复 1 & 2：保持 CDN 和网络配置不变
         net = Network(
@@ -162,7 +176,7 @@ class GraphVisualizer:
         # ==========================================
         for std_name, info in entity_info_map.items():
             heat_val = final_heat[std_name]
-            node_title = f"🏷️ 标准名称: {std_name}\n📚 别名: {', '.join(info['aliases'])}\n📄 来源文献: {info['doc_source']}\n🔥 综合热度: {heat_val:.1f}"
+            node_title = f"{lbl_std_name} {std_name}\n{lbl_aliases} {', '.join(info['aliases'])}\n{lbl_source} {info['doc_source']}\n{lbl_heat} {heat_val:.1f}"
 
             # 动态调整大小 (保留原有的缩放比例逻辑)
             node_size = 20 + heat_val * 3
@@ -182,6 +196,7 @@ class GraphVisualizer:
             rel_type = item.get("relation", "相关")
             evidence = item.get("evidence", "无")
             doc_source = item.get("doc_source", "未知文献")
+
 
             # 🛡️ 终极安全强转 (保持原样)
             raw_shortcut = item.get("is_shortcut", False)
@@ -208,10 +223,12 @@ class GraphVisualizer:
                                  title=f"⚠️ 模型幻觉节点\n📄 来源: {doc_source}")
                     entity_info_map[node] = {"aliases": [], "doc_source": doc_source}
 
+
             # 强化悬停提示框
-            edge_title = f"🔥 证据合并次数: {rel_weight} 次\n🔍 关系类型: {rel_type}\n📝 证据: {evidence}\n📄 源自: {doc_source}"
+            edge_title = f"{lbl_weight}: {rel_weight} {lbl_times}\n{lbl_rel}: {rel_type}\n{lbl_evi}: {evidence}\n{lbl_doc_src}: {doc_source}"
+
             if is_shortcut:
-                edge_title = "⚠️ [AI 判定为机制捷径]\n" + edge_title
+                edge_title = f"{lbl_shortcut}\n" + edge_title
 
             # ==========================================
             # 🎨 视觉分支判断：保持你原有的颜色、虚线与箭头处理

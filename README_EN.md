@@ -1,4 +1,18 @@
-# 🧬 Bio-Graph Agent: A Cross-Literature Incremental Biological Knowledge Graph Engine Powered by Tencent Hunyuan Hy3
+<p align="right">
+   <strong>English</strong> &nbsp;｜&nbsp; <a href="README.md">中文</a>
+</p>
+
+<div align="center">
+
+# 🧬 Bio-Graph Agent
+
+**Bio-Graph Agent: A Cross-Literature Incremental Biological Knowledge Graph Engine Powered by Tencent Hunyuan Hy3**
+
+[![Tencent Hunyuan](https://img.shields.io/badge/Powered_by-Tencent_Hunyuan-blue.svg)](https://hunyuan.tencent.com/)
+[![Python 3.10](https://img.shields.io/badge/Python-3.10-green.svg)](https://www.python.org/)
+
+</div>
+
 
 This project was developed in response to the long-text structural extraction and knowledge grounding requirements outlined in [Tencent-Hunyuan/Hy3/issues/4](https://github.com/Tencent-Hunyuan/Hy3/issues/4). Leveraging the powerful long-text context understanding and rigorous reasoning capabilities of **Tencent Hunyuan Hy3**, we have built a **Bio-Knowledge Graph LLM Agent**. This system automatically extracts information from literature (PDFs), performs dual-layer reflective quality checks, aligns semantics across multiple documents, and ultimately generates highly interactive dynamic network topology graphs.
 
@@ -67,8 +81,8 @@ This system strictly follows professional visual rendering specifications for bi
    * **Deep Interaction**: Click on any node or edge, and the system instantly extracts the extraction basis and original literature source (micro-context) for that part, calling the LLM to deduce and generate an extremely detailed biological mechanism interpretation report on the spot, yielding proposal-grade materials directly.
 
 8. **Industrial-Grade State Machine Management & i18n Foundation**
-   * **专属科研资产沉淀 (Exclusive Research Asset Accumulation)**: Supports one-click exporting of the massive dynamic network carrying huge evidence chains and expert modification logs into a privatized `.biokg` save file. Supports breakpoint loading and seamless rendering anytime.
-   * **Dynamic Internationalization Architecture**: Underlying framework utilizes a standard i18n dynamic bilingual injection, combined with rigorous Streamlit state machine flow logic, achieving seamless hot-switching between Chinese and English for both the full interface and LLM output results.
+   * **Exclusive Resarch Asset Accumulation)**: Supports one-click exporting of the massive dynamic network carrying huge evidence chains and expert modification logs into a privatized `.biokg` save file. Supports breakpoint loading and seamless rendering anytime.
+   * **Dynamic Internationalization Architecture**: Underying framework utilizes a standard i18n dynamic bilingual injection, combined with rigorous Streamlit state machine flow logic, achieving seamless hot-switching between Chinese and English for both the full interface and LLM output results.
 
 ---
 

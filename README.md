@@ -1,4 +1,17 @@
-# 🧬 Bio-Graph Agent: 基于腾讯混元 Hy3 的跨文献增量生物知识图谱引擎
+<p align="right">
+   <a href="README_EN.md">English</a> &nbsp;｜&nbsp; <strong>中文</strong>
+</p>
+
+<div align="center">
+
+# 🧬 Bio-Graph Agent
+
+**基于腾讯混元 Hy3 的跨文献增量生物知识图谱引擎**
+
+[![Tencent Hunyuan](https://img.shields.io/badge/Powered_by-Tencent_Hunyuan-blue.svg)](https://hunyuan.tencent.com/)
+[![Python 3.10](https://img.shields.io/badge/Python-3.10-green.svg)](https://www.python.org/)
+
+</div>
 
 本项目针对 [Tencent-Hunyuan/Hy3/issues/4](https://github.com/Tencent-Hunyuan/Hy3/issues/4) 的长文本结构化抽取与知识落地诉求开发。利用 **腾讯混元 Hy3** 强大的长文本上下文理解能力与严谨的推理性能，构建了一套能够自文献（PDF）中自动提取、双层反思质检、跨文献语义对齐，并最终生成高交互性动态网络拓扑图的 **Bio-Knowledge Graph LLM Agent**。
 
