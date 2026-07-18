@@ -8,6 +8,17 @@ from pypdf import PdfReader
 # =====================================================================
 # 1. PDF 处理器类
 # =====================================================================
+import os
+import webbrowser
+import pypdf
+from pyvis.network import Network
+import re
+from pypdf import PdfReader
+
+
+# =====================================================================
+# 1. PDF 处理器类 (双引擎增强版)
+# =====================================================================
 class PDFProcessor:
     def __init__(self, chunk_size=1200, overlap=200):
         self.chunk_size = chunk_size
@@ -17,26 +28,45 @@ class PDFProcessor:
         """读取PDF指定页码范围并切块"""
         print(f"📄 [PDFProcessor] 正在读取文献: {pdf_path}")
         text = ""
+
+        # 🌟 首选引擎：尝试使用容错率极高的 PyMuPDF (fitz)
         try:
-            with open(pdf_path, 'rb') as file:
-                reader = pypdf.PdfReader(file)
-                total_pages = len(reader.pages)
+            import fitz
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
 
-                # 如果没有指定结束页，或者结束页越界，则默认读到最后一页
-                if end_page is None or end_page > total_pages:
-                    end_page = total_pages
+            if end_page is None or end_page > total_pages:
+                end_page = total_pages
 
-                print(f"📌 [PDFProcessor] 计划解析第 {start_page + 1} 页 到 第 {end_page} 页...")
+            print(f"📌 [PDFProcessor] (PyMuPDF引擎) 计划解析第 {start_page + 1} 页 到 第 {end_page} 页...")
+            for page_num in range(start_page, end_page):
+                page = doc[page_num]
+                extracted = page.get_text()
+                if extracted:
+                    text += extracted + "\n"
+            doc.close()
 
-                # 只遍历用户选择的页码范围
-                for page_num in range(start_page, end_page):
-                    page = reader.pages[page_num]
-                    extracted = page.extract_text()
-                    if extracted:
-                        text += extracted + "\n"
-        except Exception as e:
-            print(f"❌ [PDFProcessor] 读取 PDF 失败: {e}")
-            return []
+        except Exception as fitz_err:
+            print(f"⚠️ [PDFProcessor] PyMuPDF 解析受阻，自动降级至 pypdf 引擎... ({fitz_err})")
+
+            # 🌟 备用引擎：Fallback 回 pypdf
+            try:
+                with open(pdf_path, 'rb') as file:
+                    reader = pypdf.PdfReader(file)
+                    total_pages = len(reader.pages)
+
+                    if end_page is None or end_page > total_pages:
+                        end_page = total_pages
+
+                    print(f"📌 [PDFProcessor] (pypdf引擎) 计划解析第 {start_page + 1} 页 到 第 {end_page} 页...")
+                    for page_num in range(start_page, end_page):
+                        page = reader.pages[page_num]
+                        extracted = page.extract_text()
+                        if extracted:
+                            text += extracted + "\n"
+            except Exception as e:
+                print(f"❌ [PDFProcessor] 双引擎读取均告失败: {e}")
+                return []
 
         # 清理多余空格并切块
         text = " ".join(text.split())
@@ -52,26 +82,31 @@ class PDFProcessor:
 
     def get_raw_text(self, pdf_path, start_page, end_page):
         """直接获取指定页码的纯文本，不进行分块，用于寻找摘要"""
-        reader = PdfReader(pdf_path)
         text = ""
-        for i in range(start_page, min(end_page, len(reader.pages))):
-            text += reader.pages[i].extract_text() + "\n"
+        # 摘要提取区同样配置双引擎
+        try:
+            import fitz
+            doc = fitz.open(pdf_path)
+            for i in range(start_page, min(end_page, len(doc))):
+                text += doc[i].get_text() + "\n"
+            doc.close()
+        except Exception:
+            try:
+                reader = PdfReader(pdf_path)
+                for i in range(start_page, min(end_page, len(reader.pages))):
+                    text += reader.pages[i].extract_text() + "\n"
+            except Exception as e:
+                print(f"❌ [PDFProcessor] 获取原文本失败: {e}")
         return text
 
     def extract_abstract_regex(self, text):
         """第一道防线：正则捕获摘要 (中英双语增强版)"""
-        # 正则逻辑：
-        # 1. 匹配起始词：Abstract, Summary, 或 摘要 (忽略大小写)
-        # 2. 匹配分隔符：允许出现中英文冒号、句号、换行符和空格
-        # 3. 截取正文：(.*?)
-        # 4. 停止边界：遇到 Keywords, Introduction, Background, 关键词, 引言, 背景 时停止提取
         pattern = re.compile(
             r'(?i)(?:abstract|summary|摘要)\s*[:：\.\n]*\s*(.*?)(?=(?:\n\s*keywords|\bintroduction\b|1\.\s*introduction|\bbackground\b|关键词|引言|背景|1\.\s*引言))',
             re.IGNORECASE | re.DOTALL
         )
         match = pattern.search(text)
         if match:
-            # 如果匹配到的内容大于 50 个字符，才认为是有效提取
             extracted = match.group(1).strip()
             if len(extracted) > 50:
                 return extracted
