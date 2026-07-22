@@ -387,7 +387,7 @@ UI_TEXT = {
     # 2. 模型选项
     "model_hy3_preview": {"zh": "Hunyuan 3 Preview (预览版 - 高性价比)", "en": "Hunyuan 3 Preview (Cost-effective)"},
     "model_hy3": {"zh": "Hunyuan 3 (正式版 - 最强推理)", "en": "Hunyuan 3 (Official - Max Reasoning)"},
-    "model_hy3_free": {"zh": "Hunyuan 3 Free (免费版 - 易被限流)", "en": "Hunyuan 3 Free (Rate-limited)"},
+
 
     # 3. 数据库选项
     "db_pubmed": {"zh": "PubMed (生物医学权威)", "en": "PubMed (Biomedical Auth)"},
@@ -890,7 +890,6 @@ with st.sidebar:
             model_options = {
                 t("model_hy3_preview"): "tencent/hy3-preview",
                 t("model_hy3"): "tencent/hy3",
-                t("model_hy3_free"): "tencent/hy3:free"
             }
             # UI显示的是 keys，存进 config 的是 selected_model_name
             st.selectbox(t("sidebar_model_select"), list(model_options.keys()), key="selected_model_name", on_change=save_config)
@@ -1316,7 +1315,7 @@ if uploaded_file and start_button:
         # 🛠️ 核心 UI 修复：将 try 提到最外层，内部所有的 spinner 扁平化独立，避免重叠！
         try:
             # 实例化 Pipeline 并传入动态模型
-            pipeline = BioGraphPipeline(api_key=api_key, model=selected_model_id)
+            pipeline = BioGraphPipeline(api_key=api_key, model=selected_model_id,base_url=base_url)
 
             # 🟢 阶段一：独立的解析转圈
             with st.spinner(t("msg_parsing_pages").format(start=start_page, end=end_page)):
@@ -2127,7 +2126,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                 with st.spinner(t("msg_pruning_diagnosing")):
                     from LLM_SYS import BioBrainAgent
 
-                    agent = BioBrainAgent(api_key=current_api_key)
+                    agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                     suggestions = agent.diagnose_graph(st.session_state.master_entities,
                                                        st.session_state.master_relations,
                                                        output_lang=st.session_state.get("ui_language", "zh"))
@@ -2290,7 +2289,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                 with st.spinner(t("msg_finding_irrelevant")):
                     from LLM_SYS import BioBrainAgent
 
-                    agent = BioBrainAgent(api_key=current_api_key)
+                    agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                     prune_suggestions = agent.prune_nodes_by_intent(
                         user_interest,
                         st.session_state.master_entities,
@@ -2411,7 +2410,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
 
                         from LLM_SYS import BioBrainAgent
 
-                        agent = BioBrainAgent(api_key=current_api_key)
+                        agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
 
                         selected_nodes_info = []
                         for e in st.session_state.master_entities:
@@ -2524,7 +2523,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                         searcher = get_searcher(current_db)
                         from LLM_SYS import BioBrainAgent
 
-                        agent = BioBrainAgent(api_key=current_api_key)
+                        agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
 
                         with st.spinner(t("msg_deep_parsing").format(pmid=pmid)):
                             abstract = searcher.fetch_abstract(pmid)
@@ -2697,7 +2696,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                             with st.spinner(t("msg_writing_report")):
                                 from LLM_SYS import BioBrainAgent
 
-                                agent = BioBrainAgent(api_key=current_api_key)
+                                agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                                 report = agent.explain_mechanism(node_a, node_b, paths,output_lang=st.session_state.get("ui_language", "zh"))
                                 st.session_state.bridge_report = report
                                 st.rerun()
@@ -2718,7 +2717,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                             from LLM_SYS import BioBrainAgent
                             from WebSearcher import get_searcher
 
-                            agent = BioBrainAgent(api_key=current_api_key)
+                            agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                             query = agent.generate_bridge_query(node_a, node_b)
 
                             if "[NO_RELATION_ERROR]" in query:
@@ -2775,7 +2774,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
 
                         current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
                         searcher = get_searcher(current_db)
-                        agent = BioBrainAgent(api_key=api_key.strip())
+                        agent = BioBrainAgent(api_key=api_key.strip(),model=selected_model_id,base_url=base_url)
 
                         combined_abstracts = ""
                         for _, row in selected_b_docs.iterrows():
@@ -2817,7 +2816,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                     with st.spinner(t("msg_bulletproof_merging")):
                         from LLM_SYS import BioBrainAgent
 
-                        agent = BioBrainAgent(api_key=api_key.strip())
+                        agent = BioBrainAgent(api_key=api_key.strip(),model=selected_model_id,base_url=base_url)
 
                         alignment_map = agent.align_global_entities(st.session_state.master_entities,
                                                                     new_ents)
@@ -2937,7 +2936,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
 
                                 from LLM_SYS import BioBrainAgent
 
-                                agent = BioBrainAgent(api_key=current_api_key)
+                                agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                                 explanation = agent.explain_graph_element("节点", target_node, local_ctx,output_lang=st.session_state.get("ui_language", "zh"))
 
                                 st.markdown(t("report_node_title"))
@@ -3013,7 +3012,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
 
                                         from LLM_SYS import BioBrainAgent
 
-                                        agent = BioBrainAgent(api_key=current_api_key)
+                                        agent = BioBrainAgent(api_key=current_api_key,model=selected_model_id,base_url=base_url)
                                         explanation = agent.explain_graph_element("关系连线", target_rel_label,
                                                                                   local_ctx,output_lang=st.session_state.get("ui_language", "zh"))
 

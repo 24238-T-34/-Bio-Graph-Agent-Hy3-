@@ -7,10 +7,10 @@ import collections
 # 4. 系统总调度管道（核心：增量式累加记忆）
 # =====================================================================
 class BioGraphPipeline:
-    def __init__(self, api_key, model="tencent/hy3-preview"):
+    def __init__(self, api_key, model="tencent/hy3-preview",base_url = "https://openrouter.ai/api/v1"):
         self.processor = PDFProcessor()
         # 把前端传进来的 model 继续传给大模型智能体
-        self.agent = BioBrainAgent(api_key=api_key, model=model)
+        self.agent = BioBrainAgent(api_key=api_key, model=model,base_url=base_url)
         self.visualizer = GraphVisualizer()
 
         # 全局图谱存储（增量更新的基础）

@@ -242,4 +242,6 @@ streamlit run app.py
 * [ ] **灵感与写作双模工作台 (Hypothesis & Writing Copilot)**：向“AI 驱动的科学发现引擎”演进，规划引入多页应用（Multi-page App）架构，独立出全新的 AIGC 写作舱。
   - **自动探勘 (Autonomous Exploration)**：无需人工指定，系统自主寻找图谱中的“结构洞 (Structural Holes)”与“边缘节点”，触发外网检索引擎进行科研盲盒探索。
   - **开题报告生成**：支持基于图谱中探勘出的高潜力级联链路，一键生成带有严谨文献出处与立题依据的开题报告/研究背景初稿。
-
+* [ ] **上下文增强与关系降维 (Context-Aware Relation Extraction)**：引入边属性元数据 (Edge Metadata)，将细胞系、突变状态、实验环境等生物学前提作为条件约束附加在连线上（悬停气泡展示），避免核心节点游离；新增“AI 逻辑推演”模式，通过实线 (文献事实) 与虚线 (拓扑假说) 分离，展示潜在的机制推演。
+* [ ] **工业级质检与专家闭环 (Verification & Human-in-the-Loop)**：结合多线程高并发架构，引入可配置的“平行自洽性投票”，按需拦截低置信度关系交由模型二次仲裁；打造侧边栏“专家审阅隔离区 (Expert Review Queue)”，解决跨文献逻辑冲突，实现“大模型海量初筛 + 专家一键裁决”的安全闭环。
+* [ ] **多模态文献解析架构 (Multimodal Architecture Upgrade)**：突破纯文本局限，升级 PDF 图文混合解析引擎。对接 OpenRouter 及腾讯混元等多模态视觉大模型 (Vision LLMs)，重点攻克生物文献中极具科研价值的信号通路图 (Pathway Diagrams) 与图文摘要的精准提取与逻辑融合。
