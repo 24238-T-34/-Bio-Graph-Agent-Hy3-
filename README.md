@@ -13,7 +13,7 @@
 
 </div>
 
-本项目针对 [Tencent-Hunyuan/Hy3/issues/4](https://github.com/Tencent-Hunyuan/Hy3/issues/4) 的长文本结构化抽取与知识落地诉求开发。利用 **腾讯混元 Hy3** 强大的长文本上下文理解能力与严谨的推理性能，构建了一套能够自文献（PDF）中自动提取、双层反思质检、跨文献语义对齐，并最终生成高交互性动态网络拓扑图的 **Bio-Knowledge Graph LLM Agent**。
+本项目利用 **腾讯混元 Hy3** 强大的长文本上下文理解能力与严谨的推理性能，构建了一套能够自文献（PDF）中自动提取、双层反思质检、跨文献语义对齐，并最终生成高交互性动态网络拓扑图的 **Bio-Knowledge Graph LLM Agent**。
 
 ---
 
