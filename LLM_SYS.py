@@ -1,4 +1,5 @@
 import json
+import time
 from openai import OpenAI
 
 
@@ -15,28 +16,38 @@ class BioBrainAgent:
 
         return raw_str.replace("```json", "").replace("```", "").strip()
 
-    def _ask_llm(self, system_prompt, user_content):
-        try:
-            # 发起真正的 API 请求
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_content}
-                ],
-                temperature=0.1,
-                timeout=60.0  # 60秒超时控制
-            )
-            # 只有成功拿到 response，才会执行这一行
-            return response.choices[0].message.content
+    def _ask_llm(self, system_prompt, user_content, max_retries=3, base_delay=2.0):
+        last_exception = None
+        for attempt in range(max_retries):
+            try:
+                # 发起真正的 API 请求
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_content}
+                    ],
+                    temperature=0.1,
+                    timeout=60.0  # 60秒超时控制
+                )
+                # 只有成功拿到 response，才会执行这一行
+                return response.choices[0].message.content
 
-        except Exception as e:
-            # 🔥 核心防线：如果上面这步崩了，立刻在这里拦截！
-            # 这样就能在终端里清清楚楚看到真正的死因（比如：AuthenticationError、RateLimitError 等）
-            print(f"\n🚨 [LLM API 核心报错] 接口请求失败了！真实死因 -> {e}")
-
-            # 主动把这个真实的错误扔给外层的 Step 1，不再往下走，彻底绝杀 NameError！
-            raise e
+            except Exception as e:
+                last_exception = e
+                err_str = str(e).lower()
+                # 针对限流 429、并发冲突或临时网络连接波动进行指数退避重试
+                if ("429" in err_str or "rate" in err_str or "timeout" in err_str or "connection" in err_str) and attempt < max_retries - 1:
+                    sleep_time = base_delay * (2 ** attempt)
+                    print(f"\n⚠️ [LLM API 遇到限流或网络波动] 正在进行第 {attempt + 1}/{max_retries} 次指数退避重试，等待 {sleep_time:.1f} 秒... 原因: {e}")
+                    time.sleep(sleep_time)
+                    continue
+                else:
+                    # 🔥 核心防线：如果上面这步崩了且不可重试或耗尽重试次数，在终端提示
+                    print(f"\n🚨 [LLM API 核心报错] 接口请求失败了！真实死因 -> {e}")
+                    raise e
+        if last_exception:
+            raise last_exception
 
     def extract_entities_with_reflection(self, text,use_reflection,entity_lang="关闭 (保持原文语言)"):
         """智能体工作流：提取包含标准名和别名的实体字典"""

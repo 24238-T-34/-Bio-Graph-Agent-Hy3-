@@ -262,6 +262,7 @@ def load_config():
             "use_reflection": True,
             "append_mode": True,
             "entity_language": "关闭 (保持原文语言)",
+            "concurrency_workers": 4,
             "ENABLE_EDITOR": True,  # ✨ 恢复的开关 1
             "ENABLE_AI_CLEANER": True,  # ✨ 恢复的开关 2
             "ui_language": "zh"
@@ -290,7 +291,7 @@ def save_config():
     config_keys = [
         "api_provider", "custom_base_url", "selected_model_name", "custom_model_id", "model_suffix",
         "search_database", "is_summary_only", "use_reflection", "append_mode",
-        "entity_language", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language"
+        "entity_language", "concurrency_workers", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language"
     ]
     # 注意：这里已经没有 empower_ontology 等绘图参数了
     config_to_save = {k: st.session_state[k] for k in config_keys if k in st.session_state}
@@ -438,6 +439,8 @@ UI_TEXT = {
     "toggle_summary_only": {"zh": "⚡ 仅提取摘要模式 (速度极快)", "en": "⚡ Summary Only Mode (Extremely Fast)"},
     "toggle_reflection": {"zh": "🔍 启用自我反思纠错", "en": "🔍 Enable Self-Reflection Check"},
     "toggle_append_mode": {"zh": "🔗 追加模式 (叠加到现有图谱)", "en": "🔗 Append Mode (Merge to Existing Graph)"},
+    "slider_concurrency": {"zh": "⚡ 并发线程数 (多切块并行解析)", "en": "⚡ Concurrency Workers (Parallel Chunks)"},
+    "slider_concurrency_help": {"zh": "多线程并行抽取切块，可大幅压缩文献解析耗时。若遇到频繁 API 限流报错可调小此数值。", "en": "Extract chunks concurrently to speed up parsing. Reduce this if you hit API rate limits."},
     "entity_lang_title": {"zh": "#### 🌐 实体命名规范", "en": "#### 🌐 Entity Naming Convention"},
     "entity_lang_label": {"zh": "强制统一图谱主节点（实体）的输出语言：", "en": "Force unify output language of main graph nodes (entities):"},
     "entity_lang_opt_original": {"zh": "关闭 (保持原文语言)", "en": "Off (Keep Original Language)"},
@@ -1116,6 +1119,15 @@ with left_col:
     is_summary_only = st.toggle(t("toggle_summary_only"), key="is_summary_only", on_change=save_config)
     use_reflection = st.toggle(t("toggle_reflection"), key="use_reflection", on_change=save_config)
     append_mode = st.toggle(t("toggle_append_mode"), key="append_mode", on_change=save_config)
+    concurrency_workers = st.slider(
+        t("slider_concurrency"),
+        min_value=1,
+        max_value=8,
+        value=int(st.session_state.get("concurrency_workers", 4)),
+        key="concurrency_workers",
+        help=t("slider_concurrency_help"),
+        on_change=save_config
+    )
 
     st.markdown(t("entity_lang_title"))
 
@@ -1384,7 +1396,8 @@ if uploaded_file and start_button:
                     source_name=uploaded_file.name,
                     entity_lang=entity_language,
                     progress_callback=update_ui_progress,
-                    output_lang=st.session_state.get("ui_language", "zh")
+                    output_lang=st.session_state.get("ui_language", "zh"),
+                    concurrency=concurrency_workers
                 )
 
             # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)
