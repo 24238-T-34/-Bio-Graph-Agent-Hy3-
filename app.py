@@ -394,7 +394,6 @@ UI_TEXT = {
     "api_custom": {"zh": "自定义 (Custom)", "en": "Custom URL"},
 
     # 2. 模型选项
-    "model_gemini_2_5_flash": {"zh": "Gemini 2.5 Flash (谷歌极速高智能版)", "en": "Gemini 2.5 Flash (Fast & Smart)"},
     "model_gemini_2_5_flash_lite": {"zh": "Gemini 2.5 Flash-Lite (谷歌极致低价版)", "en": "Gemini 2.5 Flash-Lite (Ultra Low Cost)"},
     "model_qwen_2_5_72b": {"zh": "Qwen 2.5 72B (千问学术双语旗舰版)", "en": "Qwen 2.5 72B (Bilingual Flagship)"},
     "model_hy4_preview": {"zh": "Hunyuan 4 Preview (混元4预览版)", "en": "Hunyuan 4 Preview (Cost-effective)"},
@@ -906,7 +905,6 @@ with st.sidebar:
         else:
             # 对于云端源，使用你极其优雅的字典映射
             model_options = {
-                t("model_gemini_2_5_flash"): "google/gemini-2.5-flash",
                 t("model_gemini_2_5_flash_lite"): "google/gemini-2.5-flash-lite",
                 t("model_qwen_2_5_72b"): "qwen/qwen-2.5-72b-instruct",
                 t("model_deepseek_4_1_flash"): "deepseek/deepseek-v4.1-flash",
