@@ -394,6 +394,8 @@ UI_TEXT = {
     "api_custom": {"zh": "自定义 (Custom)", "en": "Custom URL"},
 
     # 2. 模型选项
+    "model_gemini_2_0_flash": {"zh": "Gemini 2.0 Flash (谷歌极速高智能版)", "en": "Gemini 2.0 Flash (Fast & Smart)"},
+    "model_qwen_2_5_72b": {"zh": "Qwen 2.5 72B (千问学术双语旗舰版)", "en": "Qwen 2.5 72B (Bilingual Flagship)"},
     "model_hy4_preview": {"zh": "Hunyuan 4 Preview (混元4预览版)", "en": "Hunyuan 4 Preview (Cost-effective)"},
     "model_hy3_preview": {"zh": "Hunyuan 3 Preview (预览版 - 高性价比)", "en": "Hunyuan 3 Preview (Cost-effective)"},
     "model_hy3": {"zh": "Hunyuan 3 (正式版 - 最强推理)", "en": "Hunyuan 3 (Official - Max Reasoning)"},
@@ -903,12 +905,14 @@ with st.sidebar:
         else:
             # 对于云端源，使用你极其优雅的字典映射
             model_options = {
+                t("model_gemini_2_0_flash"): "google/gemini-2.0-flash-001",
+                t("model_qwen_2_5_72b"): "qwen/qwen-2.5-72b-instruct",
+                t("model_deepseek_4_1_flash"): "deepseek/deepseek-v4.1-flash",
+                t("model_gemini_3_8_flash"): "google/gemini-3.8-flash",
+                t("model_glm_5_3"): "zhipu/glm-5.3",
                 t("model_hy4_preview"): "tencent/hy4-preview",
                 t("model_hy3_preview"): "tencent/hy3-preview",
                 t("model_hy3"): "tencent/hy3",
-                t("model_deepseek_4_1_flash"): "deepseek/deepseek-v4.1-flash",
-                t("model_glm_5_3"): "zhipu/glm-5.3",
-                t("model_gemini_3_8_flash"): "google/gemini-3.8-flash",
             }
             # UI显示的是 keys，存进 config 的是 selected_model_name
             st.selectbox(t("sidebar_model_select"), list(model_options.keys()), key="selected_model_name", on_change=save_config)
