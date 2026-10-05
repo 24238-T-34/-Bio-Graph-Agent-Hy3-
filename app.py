@@ -256,6 +256,7 @@ def load_config():
             "custom_base_url": "https://api.openai.com/v1",
             "selected_model_name": "Hunyuan 3 Preview (预览版 - 高性价比)",  # 记录下拉框的选择名称
             "custom_model_id": "",  # 用于 Ollama 等自定义手填的模型
+            "model_suffix": "",  # 记录云端模型的后缀或保底覆盖
             "search_database": "PubMed (生物医学权威)",
             "is_summary_only": False,
             "use_reflection": True,
@@ -287,9 +288,9 @@ def load_config():
 def save_config():
     """仅保存核心业务设置，忽略绘图参数"""
     config_keys = [
-        "api_provider", "custom_base_url", "selected_model_name", "custom_model_id",
+        "api_provider", "custom_base_url", "selected_model_name", "custom_model_id", "model_suffix",
         "search_database", "is_summary_only", "use_reflection", "append_mode",
-        "entity_language", "ENABLE_EDITOR", "ENABLE_AI_CLEANER","ui_language"  # ✨ 添加这两个开关
+        "entity_language", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language"
     ]
     # 注意：这里已经没有 empower_ontology 等绘图参数了
     config_to_save = {k: st.session_state[k] for k in config_keys if k in st.session_state}
@@ -362,6 +363,13 @@ UI_TEXT = {
     "sidebar_base_url": {"zh": "🔗 Base URL", "en": "🔗 Base URL"},
     "sidebar_model_id_custom": {"zh": "🧠 模型 ID (如 qwen2.5:7b)", "en": "🧠 Model ID (e.g. qwen2.5:7b)"},
     "sidebar_model_select": {"zh": "🧠 选择底层驱动模型", "en": "🧠 Select Base Model"},
+    "sidebar_model_suffix": {"zh": "🔧 模型后缀 / 自定义保底 (可选)", "en": "🔧 Model Suffix / Custom Fallback (Optional)"},
+    "sidebar_model_suffix_placeholder": {"zh": "如 :free 或完整模型ID", "en": "e.g. :free or full model ID"},
+    "sidebar_model_suffix_help": {
+        "zh": "可输入后缀（如 :free）自动拼接在所选模型后；亦可输入完整模型ID（如 meta-llama/llama-3.3-70b-instruct）进行全量覆盖。",
+        "en": "Enter a suffix (e.g. :free) to append to the model, or enter a full model ID to override."
+    },
+    "sidebar_model_active_preview": {"zh": "当前生效模型: ", "en": "Active Model: "},
     "sidebar_db_title": {"zh": "#### 📚 智能检索源", "en": "#### 📚 Smart Search Source"},
     "sidebar_db_select": {"zh": "数据库", "en": "Database"},
     "sidebar_features_title": {"zh": "#### 🎛️ 界面功能开关", "en": "#### 🎛️ Feature Toggles"},
@@ -385,8 +393,12 @@ UI_TEXT = {
     "api_custom": {"zh": "自定义 (Custom)", "en": "Custom URL"},
 
     # 2. 模型选项
+    "model_hy4_preview": {"zh": "Hunyuan 4 Preview (混元4预览版)", "en": "Hunyuan 4 Preview (Cost-effective)"},
     "model_hy3_preview": {"zh": "Hunyuan 3 Preview (预览版 - 高性价比)", "en": "Hunyuan 3 Preview (Cost-effective)"},
     "model_hy3": {"zh": "Hunyuan 3 (正式版 - 最强推理)", "en": "Hunyuan 3 (Official - Max Reasoning)"},
+    "model_deepseek_4_1_flash": {"zh": "DeepSeek 4.1 Flash (深度求索极速版)", "en": "DeepSeek 4.1 Flash"},
+    "model_glm_5_3": {"zh": "GLM 5.3 (智谱大模型)", "en": "GLM 5.3 (Zhipu AI)"},
+    "model_gemini_3_8_flash": {"zh": "Gemini 3.8 Flash (谷歌高性价比极速版)", "en": "Gemini 3.8 Flash"},
 
 
     # 3. 数据库选项
@@ -888,8 +900,12 @@ with st.sidebar:
         else:
             # 对于云端源，使用你极其优雅的字典映射
             model_options = {
+                t("model_hy4_preview"): "tencent/hy4-preview",
                 t("model_hy3_preview"): "tencent/hy3-preview",
                 t("model_hy3"): "tencent/hy3",
+                t("model_deepseek_4_1_flash"): "deepseek/deepseek-v4.1-flash",
+                t("model_glm_5_3"): "zhipu/glm-5.3",
+                t("model_gemini_3_8_flash"): "google/gemini-3.8-flash",
             }
             # UI显示的是 keys，存进 config 的是 selected_model_name
             st.selectbox(t("sidebar_model_select"), list(model_options.keys()), key="selected_model_name", on_change=save_config)
@@ -899,7 +915,33 @@ with st.sidebar:
             if current_model not in model_options:
                 current_model = list(model_options.keys())[0]
 
-            selected_model_id = model_options[current_model]
+            base_model_id = model_options[current_model]
+
+            # 🛡️ 核心保底：允许用户自定义模型后缀或全量覆盖
+            model_suffix = st.text_input(
+                t("sidebar_model_suffix"),
+                key="model_suffix",
+                placeholder=t("sidebar_model_suffix_placeholder"),
+                help=t("sidebar_model_suffix_help"),
+                on_change=save_config
+            )
+
+            # 智能合成最终使用的模型 ID
+            if model_suffix and model_suffix.strip():
+                s = model_suffix.strip()
+                if s.startswith(":"):
+                    selected_model_id = f"{base_model_id}{s}"
+                elif "/" in s:
+                    # 包含斜杠则判定为全量自定义模型 ID（如 meta-llama/llama-3.3-70b-instruct）
+                    selected_model_id = s
+                else:
+                    # 未输入冒号但输入了后缀（如 free）自动补齐冒号后缀
+                    selected_model_id = f"{base_model_id}:{s}"
+            else:
+                selected_model_id = base_model_id
+
+            # 实时回显生效的 ID
+            st.caption(f"🚀 {t('sidebar_model_active_preview')} `{selected_model_id}`")
 
         st.markdown("---")
         st.markdown(t("sidebar_db_title"))
