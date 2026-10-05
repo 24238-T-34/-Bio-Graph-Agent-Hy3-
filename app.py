@@ -976,7 +976,7 @@ with left_col:
 
                 current_db = st.session_state.get("search_database", "PubMed (生物医学权威)")
                 searcher = get_searcher(current_db)
-                agent = BioBrainAgent(api_key=current_api_key)
+                agent = BioBrainAgent(api_key=current_api_key, model=selected_model_id, base_url=base_url)
 
                 with st.spinner(t("msg_generating_query")):
                     query = agent.generate_topic_query(user_topic)

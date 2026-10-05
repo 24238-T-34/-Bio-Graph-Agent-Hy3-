@@ -14,7 +14,7 @@
 </div>
 
 
-This project was developed in response to the long-text structural extraction and knowledge grounding requirements outlined in [Tencent-Hunyuan/Hy3/issues/4](https://github.com/Tencent-Hunyuan/Hy3/issues/4). Leveraging the powerful long-text context understanding and rigorous reasoning capabilities of **Tencent Hunyuan Hy3**, we have built a **Bio-Knowledge Graph LLM Agent**. This system automatically extracts information from literature (PDFs), performs dual-layer reflective quality checks, aligns semantics across multiple documents, and ultimately generates highly interactive dynamic network topology graphs.
+This project focuses on addressing long-text structural extraction and scientific knowledge grounding requirements in the biomedical domain. Leveraging the powerful long-text context understanding and rigorous reasoning capabilities of **Tencent Hunyuan Hy3**, we have built a **Bio-Knowledge Graph LLM Agent**. This system automatically extracts information from literature (PDFs), performs dual-layer reflective quality checks, aligns semantics across multiple documents, and ultimately generates highly interactive dynamic network topology graphs.
 
 ---
 
