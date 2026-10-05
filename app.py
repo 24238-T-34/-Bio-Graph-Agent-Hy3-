@@ -341,6 +341,50 @@ def redraw_and_update():
             st.session_state.html_data = f.read()
 
 
+LOCAL_VAULT_FILE = ".current_project.biokg"
+
+
+def save_local_vault():
+    """将当前记忆库（实体、关系、历史文献）原地覆写保存到固定本地工程文件（类似Word保存，绝对单文件直接截断覆写，绝不生成副本）"""
+    if "master_entities" in st.session_state and st.session_state.master_entities:
+        data = {
+            "entities": st.session_state.master_entities,
+            "relations": st.session_state.get("master_relations", []),
+            "analyzed_files": st.session_state.get("analyzed_files", [])
+        }
+        try:
+            with open(LOCAL_VAULT_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"本地记忆库自动写入失败: {e}")
+
+
+def load_local_vault():
+    """应用启动或页面刷新时，若内存为空且本地记忆库存在，则自动载入以恢复图谱与工作区"""
+    if not st.session_state.get("master_entities") and os.path.exists(LOCAL_VAULT_FILE):
+        try:
+            with open(LOCAL_VAULT_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            entities = data.get("entities", [])
+            if entities:
+                st.session_state.master_entities = entities
+                st.session_state.master_relations = data.get("relations", [])
+                st.session_state.analyzed_files = data.get("analyzed_files", [])
+                st.session_state.show_results = True
+                redraw_and_update()
+        except Exception as e:
+            print(f"本地记忆库自动加载失败: {e}")
+
+
+def clear_local_vault():
+    """新建空白工程时，物理删除本地记忆库文件，避免残留恢复"""
+    if os.path.exists(LOCAL_VAULT_FILE):
+        try:
+            os.remove(LOCAL_VAULT_FILE)
+        except Exception as e:
+            print(f"清理本地记忆库失败: {e}")
+
+
 # ==========================================
 # 页面全局配置
 # ==========================================
@@ -824,6 +868,7 @@ if "analyzed_files" not in st.session_state:
     st.session_state.analyzed_files = []
 
 load_config()
+load_local_vault()
 
 # append_mode = True
 # ==========================================
@@ -1115,6 +1160,7 @@ with left_col:
                             st.toast(t("toast_start_success"), icon="🎉")
                             st.session_state.show_results = True
                             redraw_and_update()
+                            save_local_vault()
                             st.rerun()
                         elif not success:
                             st.error(t("err_all_validation_fail").format(count=len(results)))
@@ -1307,6 +1353,7 @@ with right_col:
                             except:
                                 pass
 
+                clear_local_vault()
                 st.session_state.project_loaded_success = False
                 st.session_state.show_new_confirm = False
                 st.rerun()
@@ -1354,6 +1401,7 @@ with right_col:
                         st.session_state.html_data = f.read()
 
                 st.session_state.show_results = True
+                save_local_vault()
                 st.session_state.project_uploader_key = f"project_uploader_{uuid.uuid4().hex}"
 
                 st.rerun()
@@ -1545,6 +1593,7 @@ if uploaded_file and start_button:
 
                 # 开启展示开关
                 st.session_state.show_results = True
+                save_local_vault()
             else:
                 st.error(t("err_gen_fail"))
                 st.session_state.show_results = False

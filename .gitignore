@@ -37,4 +37,5 @@ lib/
 # 本地运行时与辅助配置
 .agents/
 .bio_graph_config.json
+.current_project.biokg
 start_wsl.bat
