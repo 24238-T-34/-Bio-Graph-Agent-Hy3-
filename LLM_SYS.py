@@ -50,90 +50,6 @@ class BioBrainAgent:
         if last_exception:
             raise last_exception
 
-    @staticmethod
-    def _is_action_name(txt: str) -> bool:
-        """
-        判断一个词或短语是否属于生物学动作、修饰过程、转运事件或调控关系（而非客观物质实体）
-        """
-        if not txt or not isinstance(txt, str):
-            return False
-        t_clean = txt.strip()
-        if not t_clean:
-            return False
-        t_low = t_clean.lower()
-
-        action_blacklist = {
-            # 中文动作/修饰/过程
-            "磷酸化", "去磷酸化", "泛素化", "去泛素化", "甲基化", "去甲基化", "乙酰化", "去乙酰化",
-            "糖基化", "棕榈酰化", "类泛素化", "sumo化", "降解", "蛋白降解", "靶向降解", "溶酶体降解",
-            "蛋白酶体降解", "自噬降解", "泛素化降解", "受体降解", "入核", "出核", "核转运", "入核转运", "出核转运",
-            "转运", "易位", "质膜易位", "核易位", "核内易位", "募集", "内化", "受体内化", "激活", "抑制", "阻断", "拮抗", "结合", "解离", "解聚",
-            "相互作用", "二聚化", "三聚化", "寡聚化", "多聚化", "自磷酸化", "反向磷酸化", "交联",
-            "切割", "水解", "转录激活", "转录抑制", "转录调控", "基因表达", "过表达", "低表达", "上调", "下调",
-            "信号传导", "级联反应", "信号级联", "复合物组装", "构象改变", "释放", "合成", "分泌", "代谢",
-            # 英文动作/修饰/过程
-            "phosphorylation", "dephosphorylation", "ubiquitination", "deubiquitination",
-            "methylation", "demethylation", "acetylation", "deacetylation", "glycosylation",
-            "palmitoylation", "sumoylation", "degradation", "protein degradation",
-            "proteasomal degradation", "ubiquitin-mediated degradation", "ubiquitination degradation",
-            "translocation", "nuclear translocation", "membrane translocation", "recruitment", "internalization",
-            "activation", "inhibition", "blockade", "binding", "dissociation", "interaction", "dimerization",
-            "oligomerization", "cleavage", "hydrolysis", "transcriptional activation",
-            "transcriptional repression", "expression", "overexpression", "upregulation",
-            "downregulation", "signal transduction", "signaling cascade", "complex assembly",
-            "synthesis", "secretion", "metabolism"
-        }
-
-        if t_low in action_blacklist or t_clean in action_blacklist:
-            return True
-
-        action_suffixes = (
-            " interaction", "-interaction", " binding", " phosphorylation",
-            " dephosphorylation", " ubiquitination", " degradation", " translocation",
-            " activation", " inhibition", " 相互作用", " 结合", " 磷酸化", " 泛素化", " 降解", " 转运", " 易位"
-        )
-        if any(t_low.endswith(suf) for suf in action_suffixes) or any(t_clean.endswith(suf) for suf in action_suffixes):
-            return True
-
-        chinese_action_endings = ("相互作用", "降解", "转运", "易位", "磷酸化", "泛素化", "乙酰化", "甲基化", "糖基化", "自磷酸化")
-        valid_entity_endings = ("酶", "体", "蛋白", "受体", "因子", "产物", "复合物", "复合体", "基因", "细胞", "分子")
-        if any(t_clean.endswith(end) for end in chinese_action_endings) and not any(t_clean.endswith(v) for v in valid_entity_endings):
-            return True
-
-        return False
-
-    @classmethod
-    def _filter_action_hallucinations(cls, entities):
-        """
-        代码级动作与过程幻觉绞杀网：
-        彻底拦截任何逃逸了 LLM 反思的“动作性、修饰性、调控事件性”伪实体节点。
-        """
-        if not isinstance(entities, list):
-            return []
-
-        valid_entities = []
-        for ent in entities:
-            if not isinstance(ent, dict):
-                continue
-            name = str(ent.get("standard_name", "")).strip()
-            if not name:
-                continue
-
-            # 1. 检查主标准名
-            if cls._is_action_name(name):
-                print(f"   🧹 [代码级动作过滤网] 拦截并剔除动作性伪实体: '{name}'")
-                continue
-
-            # 2. 清洗别名中的黑名单词汇
-            aliases = ent.get("aliases", [])
-            if isinstance(aliases, list):
-                cleaned_aliases = [a for a in aliases if not cls._is_action_name(str(a))]
-                ent["aliases"] = cleaned_aliases
-
-            valid_entities.append(ent)
-
-        return valid_entities
-
     def extract_entities_with_reflection(self, text,use_reflection,entity_lang="关闭 (保持原文语言)"):
         """智能体工作流：提取包含标准名和别名的实体字典"""
 
@@ -151,16 +67,8 @@ class BioBrainAgent:
         1. 确立【标准名称】：优先使用官方简写或公认名称（如 "p53", "MDM2"），长度尽量控制在 1-3 个单词内。
         2. 确立【别名】：只保留真正的生物学同义词、全称或简称（如 "TP53"）。
         3. 🚫 严禁保留无意义修饰变体：绝对不要把加了状态语、修饰语的词组当作别名提取！（例如：遇到 "endogenous p53", "p53 protein", "~53"，请直接忽略这些噪音，不要放入别名）。
-        4. 🚫 严禁提取“动作/修饰/关系/事件”为实体（极度致命，零容忍）：
-           - 实体必须是纯粹、客观具象的生物学物质名词（具体蛋白质、基因、受体、配体、复合物、离子、代谢物、靶基因、具体细胞类型或最终细胞表型结局如"细胞凋亡"）。
-           - 绝对严禁提取生化动作、翻译后修饰、空间转运或调控动词作为实体！
-           - 典型黑名单词汇（一经发现绝不提取）：
-             * 翻译后修饰：磷酸化 (phosphorylation)、去磷酸化、泛素化 (ubiquitination)、去泛素化、甲基化、乙酰化、糖基化、棕榈酰化等；
-             * 动态空间过程：入核 (nuclear translocation)、出核、转运 (translocation)、质膜易位、募集 (recruitment)、内化 (internalization)；
-             * 调控关系与动作：激活 (activation)、抑制 (inhibition)、结合 (binding)、相互作用 (interaction)、降解 (degradation)、解聚、水解、切割 (cleavage)、二聚化；
-             * 状态与过程：过表达 (overexpression)、下调、上调、表达、信号传导。
-           - 正确做法：遇到 "Smad2 磷酸化"，实体仅提取 "Smad2"，磷酸化作为关系/证据；遇到 "Smad4 入核转运"，实体仅提取 "Smad4"！
-        5. 文章讨论中带有方向性名词的应当转为中性表现，如原文为“促进代谢”应当提取为“代谢活性”而不是代谢。
+        4. 🚫 严禁提取“关系/事件”为实体（极度致命）：例如绝对不要把诸如 "p53-MDM2 interaction", "MDM2 overexpression", "binding to DNA" 提取为实体！这些属于【关系】或【事件】，它们应该在关系提取阶段作为连线出现，而不是独立的节点！实体必须是纯粹的生物学物质名词。
+        5.文章讨论中带有方向性名词的应当转为中性表现，如原文为”促进代谢“应当提取为”代谢活性“而不是代谢
         6. 🚫 严禁生成重复的同源节点：例如不要让图谱里出现多个本质上都是 p53或p53系统 的节点。除了明确的突变型，所有普通 p53 必须归一化为唯一的 "p53"。
         7. ⚠如果遇到同一实体在细节或者功能存在相反或明显区别的子对象时，应当当作两个不同的实体，尤其是文章探讨了他们的区别及不同影响时，如突变与野生型：如果文中同时明确对比了 "mutant p53"（突变型）和 "wild-type p53"（野生型），请将它们提取为两个【独立的实体】，绝对不能混为一谈。
         {language_instruction}
@@ -193,13 +101,7 @@ class BioBrainAgent:
         你的任务是进行“外科手术级”的数据清洗：
         
         1. 查漏补缺：是否有关键的生物学实体被完全遗漏了？如果有，请补全。
-        2. 🧹 彻底绞杀“动作/修饰/事件”假实体（最高优先级）：
-           - 仔细审查每一个实体的 standard_name 和 aliases：
-           - 严禁任何生物学动作、修饰词、转运词、关系词伪装成实体！
-           - 如果发现列表中包含或以以下词结尾的“假实体”，必须【直接予以彻底删除】：
-             "磷酸化", "去磷酸化", "泛素化", "去泛素化", "甲基化", "乙酰化", "降解", "入核", "出核", "转运", "易位", "激活", "抑制", "结合", "相互作用", "切割", "过表达", "募集", "内化",
-             以及对应英文 "phosphorylation", "ubiquitination", "degradation", "translocation", "activation", "inhibition", "binding", "interaction", "cleavage", "recruitment", "overexpression" 等；
-           - 绝对不允许这些动作性词汇作为实体节点进入下游关系提取！
+        2. 🧹 剔除假实体与事件节点（极度重要）：如果发现初次提取的字典里有诸如 "p53-MDM2 interaction", "MDM2 overexpression", "apoptosis activation" 等描述【关系、状态或事件】的词组被错误地当成了实体，请直接将它们【彻底删除】！实体必须是纯粹的物质名词。
         3. 实体去重合并：将不同叫法但指代同一概念的实体强制合并。绝对不能出现多个本质上都是 p53 的独立节点（除非是 mutant vs wild-type 这样在作用上不同的明确对比）。
         4. 📏 标准名精简压缩：如果标准名称过长，请必须将其缩短概括（优先使用官方简写，如 "p53"），并将原来的长名称移入 aliases 中！
         5. 别名瘦身去噪：初次提取的 aliases 中可能混入了大量垃圾信息（如 "p53 protein", "endogenous MDM2", "~53"）。请大刀阔斧地剔除这些带有无意义修饰词的噪音，每个实体只保留最核心的学术同义词！
@@ -216,164 +118,42 @@ class BioBrainAgent:
 
             try:
                 raw_final = self._ask_llm(prompt_s1_5, reflection_input)
-                parsed = json.loads(self._clean_json_string(raw_final))
+                return json.loads(self._clean_json_string(raw_final))  # 将反思后的结果作为最终结果
             except Exception as e:
                 print(f"   ❌ [Step 1.5/2] 反思阶段请求失败或超时: {e}")
                 return []
         else:
             print("    └─ ⏩ [Step 1.5/2] 已关闭自我反思，跳过纠错步骤...")
-            try:
-                parsed = json.loads(self._clean_json_string(cleaned_s1))
-            except Exception as e:
-                print(f"   ❌ [Step 1/2] 初次提取结果解析失败: {e}")
-                return []
-
-        # 🛡️ 核心终极防线：代码级动作/过程伪实体过滤网拦截
-        return self._filter_action_hallucinations(parsed)
-
-#        print("   └─ 🪞 [Step 1.5/2] 正在进行大脑自我反思纠错...")
-#        reflection_input = f"【原始文献】:\n{text}\n\n【初次提取】:\n{cleaned_s1}"
-#
-#        try:
-#            raw_final = self._ask_llm(prompt_s1_5, reflection_input)
-#            return json.loads(self._clean_json_string(raw_final))
-#        except Exception as e:
-#            print(f"   ❌ [Step 1.5/2] 反思阶段请求失败或超时: {e}")
-#            return []
+            raw_final = cleaned_s1
+            return json.loads(self._clean_json_string(raw_final))
 
     def extract_relations(self, text, entities_list):
-        """根据实体字典，抽取文本中的实体关系 (带闭集白名单约束与动作伪节点过滤)"""
+        """根据实体字典，抽取文本中的实体关系"""
         if not entities_list:
             return []
 
-        # 1. 建立合法标准名集合、别名映射表与白名单展示列表
-        alias_to_std = {}
-        valid_std_names = set()
-        std_names_display = []
-
-        for ent in entities_list:
-            if isinstance(ent, dict):
-                s_name = str(ent.get("standard_name", "")).strip()
-                if not s_name or self._is_action_name(s_name):
-                    continue
-                valid_std_names.add(s_name)
-                std_names_display.append(s_name)
-                alias_to_std[s_name.lower()] = s_name
-                for a in ent.get("aliases", []):
-                    if a and not self._is_action_name(str(a)):
-                        alias_to_std[str(a).strip().lower()] = s_name
-            elif isinstance(ent, str) and ent.strip():
-                s_name = ent.strip()
-                if not self._is_action_name(s_name):
-                    valid_std_names.add(s_name)
-                    std_names_display.append(s_name)
-                    alias_to_std[s_name.lower()] = s_name
-
-        if not valid_std_names:
-            return []
-
-        candidates_formatted = ", ".join([f'"{name}"' for name in std_names_display])
-
-        prompt_s2 = """你是一个顶级的计算生物学与分子机制网络分析专家。
-用户将提供一段【原始文献/机制图转译文本】以及一份【受保护的合法标准实体候选池】。
-你的任务是从文本中精准提取出这些合法实体之间的相互调控作用与级联连线关系。
-
-【⚠️ 铁律规范（违背者输出将被直接作废拦截）】：
-1. 🎯 【端点唯一合法性（闭集约束）】：
-   - 提取的每一条关系中，"source" 和 "target" **必须且只能**从【合法标准实体候选池】中严格选取！
-   - 严禁自行生造、扩充或改写任何新实体名称！若文中的作用对象未在候选池中登记，绝不能提取该关系！
-   - 如果原文中使用的是别名或缩写，必须将其标准化转换为候选池中的对应标准名！
-
-2. 🚫 【严禁将“生化动作/修饰过程/动态事件”作为节点（绝对红线）】：
-   - 绝对严禁将生化动作或修饰状态（如：“磷酸化”、“去磷酸化”、“泛素化”、“降解”、“入核”、“出核”、“转运”、“易位”、“结合”、“激活”、“抑制”、“相互作用”、“切割”等，以及对应的英文）作为 "source" 或 "target"！
-   - 生化修饰或动作必须作为证据链 (evidence) 或关系谓词，绝不能成为网络节点！
-   - 错误范例 ❌：{"source": "Smad2", "target": "磷酸化", ...}  <- 绝对禁止！"磷酸化"是动作，不是实体！
-   - 错误范例 ❌：{"source": "Smad4", "target": "入核转运", ...} <- 绝对禁止！"入核转运"是动作，不是实体！
-   - 正确范例 ✅：{"source": "TGFBR1", "target": "Smad2", "relation": "正作用", "evidence": "TGFBR1 phosphorylates Smad2..."}
-   - 正确范例 ✅：{"source": "Smad2", "target": "Smad4", "relation": "正作用", "evidence": "Smad2 binds to Smad4 and translocates into nucleus..."}
-
-3. 📏 【关系类型规范】：
-   - 关系类型 "relation" 只能是以下四种之一：
-     * "正作用"：促进、激活、上调、催化、磷酸化激活、正调控等；
-     * "负作用"：抑制、阻断、降解、去磷酸化、负调控等；
-     * "相关"：物理结合、相互作用、形成复合物、协同相关等；
-     * "包含"：宏观与微观、整体与部分、分类层级从属（如 "TGF-beta 信号通路" 包含 "Smad2"）。
-
-4. 🚫 【严禁自环与无意义边】：严禁 source == target 的自指边。
-
-5. 📄 【输出格式】：必须且只能输出合法的 JSON 数组，绝不要包含 markdown 解释或闲聊：
-[
-  {"source": "候选池中的标准实体A", "target": "候选池中的标准实体B", "relation": "正作用/负作用/相关/包含", "evidence": "支持该结论的原文关键句"}
-]"""
+        prompt_s2 = """你是一个计算生物学专家。
+        用户将提供一段【原始文献】和一份【确定的实体字典（含标准名称和别名）】。
+        请提取出这些实体之间的相互作用。
+        
+        规则：
+        1. 只能提取四种关系："正作用"、"负作用"、"相关"、"包含" (注："包含"用于表示宏观与微观、整体与部分、分类层级的从属关系)。
+        2. 你的输出中，"source" 和 "target" 必须严格使用字典中提供的【standard_name】！不要使用文中的原词或别名，从而保证图谱节点的统一。
+        3. 只输出合法 JSON 数组格式。格式如下：
+        [
+          {"source": "标准实体A", "target": "标准实体B", "relation": "正作用/负作用/相关", "evidence": "英文原文"}
+        ]"""
 
         # 📜 日志埋点 3
         print("   └─ 🔗 [Step 2/2] 正在抽取实体间的调控关系网...")
-        relation_input = (
-            f"【合法标准实体候选池 (source 和 target 必须且只能从以下列表中选择)】:\n[{candidates_formatted}]\n\n"
-            f"【原始文献/机制文本】:\n{text}"
-        )
+        relation_input = f"【原始文献】:\n{text}\n\n【确定的实体字典】:\n{json.dumps(entities_list, ensure_ascii=False)}"
 
         try:
             raw_relations = self._ask_llm(prompt_s2, relation_input)
-            parsed_relations = json.loads(self._clean_json_string(raw_relations))
+            return json.loads(self._clean_json_string(raw_relations))
         except Exception as e:
             print(f"   ❌ [Step 2/2] 关系抽取阶段请求失败或超时: {e}")
             return []
-
-        if not isinstance(parsed_relations, list):
-            return []
-
-        # 🛡️ Python 代码级多重防线审查与实体映射清洗
-        cleaned_relations = []
-        seen_pairs = set()
-
-        for rel in parsed_relations:
-            if not isinstance(rel, dict):
-                continue
-            raw_src = str(rel.get("source", "")).strip()
-            raw_tgt = str(rel.get("target", "")).strip()
-            rel_type = str(rel.get("relation", "")).strip()
-            evidence = str(rel.get("evidence", "")).strip()
-
-            if not raw_src or not raw_tgt:
-                continue
-
-            # 1. 拦截动作性伪节点 (source 或 target 命中动作词)
-            if self._is_action_name(raw_src) or self._is_action_name(raw_tgt):
-                print(f"   🧹 [代码级关系拦截] 剔除包含动作伪节点的关系: '{raw_src}' -> '{raw_tgt}'")
-                continue
-
-            # 2. 映射别名到标准名称 (Case-insensitive 别名映射)
-            src_std = alias_to_std.get(raw_src.lower(), raw_src if raw_src in valid_std_names else None)
-            tgt_std = alias_to_std.get(raw_tgt.lower(), raw_tgt if raw_tgt in valid_std_names else None)
-
-            # 3. 严格闭集校验：如果映射后仍不在标准实体候选池中，坚决剔除（防止产生未登记的粉色幻觉孤岛节点！）
-            if not src_std or not tgt_std or src_std not in valid_std_names or tgt_std not in valid_std_names:
-                print(f"   ⚠️ [代码级闭集拦截] 剔除未登记端点的孤岛关系: '{raw_src}' -> '{raw_tgt}'")
-                continue
-
-            # 4. 剔除自环
-            if src_std == tgt_std:
-                continue
-
-            # 5. 规范关系类型
-            if rel_type not in ["正作用", "负作用", "相关", "包含"]:
-                rel_type = "相关"
-
-            # 6. 单次抽取内去重
-            pair_key = (src_std, tgt_std, rel_type)
-            if pair_key in seen_pairs:
-                continue
-            seen_pairs.add(pair_key)
-
-            cleaned_relations.append({
-                "source": src_std,
-                "target": tgt_std,
-                "relation": rel_type,
-                "evidence": evidence
-            })
-
-        return cleaned_relations
 
     def verify_and_clean_abstract(self, raw_abstract):
         """大模型保安：只做判断题，绝对不碰原文本！"""
@@ -856,7 +636,7 @@ class BioBrainAgent:
 【⚠️ 视觉拓扑理解与全景转译核心规则（严禁高层概括，必须穷尽所有细节）】：
 
 1. 【地毯式生化实体清单（零遗漏盘点）】：
-   - 必须逐一列出图中出现的每一个【客观物质实体】（包括文字标注、蛋白复合物及缩写代号）：
+   - 必须逐一列出图中出现的每一个实体名称（包括文字标注、蛋白复合物及缩写代号）：
      * 细胞外因子/配体 (Ligands)
      * 跨膜受体及受体亚基 (Receptors)
      * 胞质信号分子、接头蛋白、蛋白激酶/磷酸酶 (Kinases/Phosphatases/Adapters)
@@ -864,11 +644,8 @@ class BioBrainAgent:
      * 细胞骨架调节分子与马达蛋白 (Cytoskeleton Regulators)
      * 多聚复合物 (Complexes)
      * 入核转录因子、辅激活因子、辅阻遏因子 (TFs/Coactivators/Corepressors)
-     * 下游靶基因、生理功能与细胞效应/表型 (Phenotypes/Outcomes，如 细胞凋亡/Apoptosis、细胞周期阻滞)
+     * 下游靶基因、生理功能与细胞效应/表型 (Phenotypes/Outcomes)
    - 注明其亚细胞空间定位（如细胞外、质膜、胞质、内质网/线粒体、细胞核等）。
-   - 🚫【绝对红线禁令：生化动作/修饰过程严禁作为实体列出】：
-     * 绝对严禁将生化动作、翻译后修饰过程、箭头标注动词（如：磷酸化/Phosphorylation、泛素化/Ubiquitination、降解/Degradation、入核转运/Translocation、易位、结合/Binding、相互作用/Interaction、激活/Activation、抑制/Inhibition、切割/Cleavage、过表达/Overexpression）作为【实体】列入清单！
-     * 这些生化动作必须且只能作为实体间的【调控谓词】，写入第 2 部分的“调控动作句”中（例如正确写法是：“实体: Smad2, Smad4”，并在动作句中写：“Smad2 发生磷酸化并与 Smad4 结合”；严禁将“磷酸化”或“结合”当作独立实体！）。
 
 2. 【逐条明确有向分子调控动作句（核心证据链，严禁笼统概括）】：
    - 严禁模糊使用“参与了”、“与...有关”，必须使用主谓宾明确的严谨学术动作句表达图中的每一条连线与箭头：

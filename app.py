@@ -263,6 +263,7 @@ def load_config():
             "is_summary_only": False,
             "use_reflection": True,
             "append_mode": True,
+            "enable_relation_grounding": True,
             "entity_language": "关闭 (保持原文语言)",
             "concurrency_workers": 4,
             "ENABLE_EDITOR": True,  # ✨ 恢复的开关 1
@@ -297,7 +298,7 @@ def save_config():
     """仅保存核心业务设置，忽略绘图参数"""
     config_keys = [
         "api_provider", "custom_base_url", "selected_model_name", "custom_model_id", "model_suffix",
-        "search_database", "is_summary_only", "use_reflection", "append_mode",
+        "search_database", "is_summary_only", "use_reflection", "append_mode", "enable_relation_grounding",
         "entity_language", "concurrency_workers", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language",
         "vision_strategy", "vision_match_keyword", "vision_model_choice", "vision_model_suffix", "custom_vision_model_id"
     ]
@@ -624,6 +625,8 @@ UI_TEXT = {
     "toggle_summary_only": {"zh": "⚡ 仅提取摘要模式 (速度极快)", "en": "⚡ Summary Only Mode (Extremely Fast)"},
     "toggle_reflection": {"zh": "🔍 启用自我反思纠错", "en": "🔍 Enable Self-Reflection Check"},
     "toggle_append_mode": {"zh": "🔗 追加模式 (叠加到现有图谱)", "en": "🔗 Append Mode (Merge to Existing Graph)"},
+    "toggle_relation_grounding": {"zh": "🛡️ 关系节点文献正则补漏 (自动落实漏检实体)", "en": "🛡️ Relation Node Literature Grounding (Recover Missed Entities)"},
+    "toggle_relation_grounding_help": {"zh": "切块分析完成后，若发现关系端点未在实体字典中登记，自动使用正则比对原文。若原文确实存在该实体则自动回填落实为真实节点，若完全不存在则剔除虚构关系。", "en": "After chunk analysis, regex-verify unregistered relation endpoints against the paper text. Grounded endpoints are rescued into the entity vault; ungrounded ones are pruned."},
     "slider_concurrency": {"zh": "⚡ 并发线程数 (多切块并行解析)", "en": "⚡ Concurrency Workers (Parallel Chunks)"},
     "slider_concurrency_help": {"zh": "多线程并行抽取切块，可大幅压缩文献解析耗时。若遇到频繁 API 限流报错可调小此数值。", "en": "Extract chunks concurrently to speed up parsing. Reduce this if you hit API rate limits."},
     "entity_lang_title": {"zh": "#### 🌐 实体命名规范", "en": "#### 🌐 Entity Naming Convention"},
@@ -1386,6 +1389,12 @@ with left_col:
     is_summary_only = st.toggle(t("toggle_summary_only"), key="is_summary_only", on_change=save_config)
     use_reflection = st.toggle(t("toggle_reflection"), key="use_reflection", on_change=save_config)
     append_mode = st.toggle(t("toggle_append_mode"), key="append_mode", on_change=save_config)
+    enable_relation_grounding = st.toggle(
+        t("toggle_relation_grounding"),
+        key="enable_relation_grounding",
+        help=t("toggle_relation_grounding_help"),
+        on_change=save_config
+    )
     concurrency_workers = st.slider(
         t("slider_concurrency"),
         min_value=1,
@@ -1853,7 +1862,8 @@ if uploaded_file and start_button:
                     concurrency=concurrency_workers,
                     vision_strategy=final_vision_mode if 'final_vision_mode' in locals() else "off",
                     vision_keyword=vision_keyword_val if 'vision_keyword_val' in locals() else "",
-                    vision_model=resolved_vision_model_id if 'resolved_vision_model_id' in locals() else None
+                    vision_model=resolved_vision_model_id if 'resolved_vision_model_id' in locals() else None,
+                    enable_relation_grounding=enable_relation_grounding
                 )
 
             # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)

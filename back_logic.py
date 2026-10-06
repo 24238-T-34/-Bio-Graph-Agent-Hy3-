@@ -1,6 +1,7 @@
 from LLM_SYS import BioBrainAgent
 from IO_SYS import GraphVisualizer,PDFProcessor
 import os
+import re
 import collections
 import concurrent.futures
 
@@ -71,9 +72,9 @@ class BioGraphPipeline:
             s_std = std_map.get(s_clean.lower())
             t_std = std_map.get(t_clean.lower())
 
-            # 🛡️ 校验两端节点：若出现不在已登记实体库中、或命中动作词的假节点，坚决拦截
-            if not s_std or not t_std or BioBrainAgent._is_action_name(s_std) or BioBrainAgent._is_action_name(t_std):
-                print(f"   ⚠️ [关系防线] 拦截非法关系（端点未在实体字典中登记或属于动作伪节点）: '{s}' -> '{t}'")
+            # 🛡️ 校验两端节点：若端点未在已登记实体库中，坚决拦截
+            if not s_std or not t_std:
+                print(f"   ⚠️ [关系防线] 拦截非法关系（端点未在实体字典中登记）: '{s}' -> '{t}'")
                 continue
 
             # 规范化端点为全局标准名
@@ -93,7 +94,117 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",output_lang="zh",progress_callback=None,concurrency=4,vision_strategy="off",vision_keyword="",vision_model=None):
+    @staticmethod
+    def _is_entity_grounded_in_text(entity_name: str, text: str) -> bool:
+        """使用弹性正则检查某个实体名称是否真实存在于文献原文或证据中"""
+        if not entity_name or not isinstance(entity_name, str):
+            return False
+        clean_name = entity_name.strip()
+        if len(clean_name) < 2:
+            return False
+
+        # 1. 如果是纯英文/数字/常见分子符号代号 (如 TGFBR1, p53, Smad2, CDK-4)
+        if re.search(r'^[a-zA-Z0-9_\-\s/+\.\(\)]+$', clean_name):
+            core_name = clean_name.strip("()[]{}").strip()
+            if len(core_name) < 2:
+                return False
+            # 采用单词边界匹配 (前后非字母数字)
+            pattern = rf"(?<![a-zA-Z0-9]){re.escape(core_name)}(?![a-zA-Z0-9])"
+            if re.search(pattern, text, re.IGNORECASE):
+                return True
+            # 支持常见连字符变体 (如 Smad-2 vs Smad2, NF-kB vs NFkB)
+            if "-" in core_name or " " in core_name:
+                alt = re.sub(r'[-\s]+', '', core_name)
+                alt_pattern = rf"(?<![a-zA-Z0-9]){re.escape(alt)}(?![a-zA-Z0-9])"
+                if re.search(alt_pattern, text, re.IGNORECASE):
+                    return True
+        else:
+            # 2. 中文或混合语言：子串包含检索
+            if clean_name in text:
+                return True
+
+        return False
+
+    def _ground_and_recover_chunk_hallucinations(self, chunk_text: str, ents: list, rels: list, c_source: str, enabled: bool = True):
+        """
+        切块结束后的终审拦截与正则文献兜底追溯器：
+        - 收集该切块所有关系端点；
+        - 坚决剔除任何包含生化动作伪节点（如“磷酸化”、“入核转运”）的关系；
+        - 若开启兜底 (enabled=True)：对于未在初选实体字典中登记的端点，在切块原文/证据中执行弹性正则匹配；
+          若原文确有其实体，则自动回填创建实体并入 ents（落实为真实节点，消除粉色幻觉！）；
+          若原文完全未出现，则判定为模型虚构伪节点，安全剔除该关系；
+        - 若关闭兜底 (enabled=False)：直接剔除两端未登记的关系，杜绝粉色孤岛。
+        """
+        if not rels:
+            return ents, []
+
+        std_map = {}
+        for e in ents:
+            if isinstance(e, dict):
+                s_name = str(e.get("standard_name", "")).strip()
+                if s_name:
+                    std_map[s_name.lower()] = s_name
+                    for a in e.get("aliases", []):
+                        if a:
+                            std_map[str(a).strip().lower()] = s_name
+
+        recovered_entities_count = 0
+        valid_relations = []
+
+        for rel in rels:
+            if not isinstance(rel, dict):
+                continue
+            s_raw = str(rel.get("source", "")).strip()
+            t_raw = str(rel.get("target", "")).strip()
+            if not s_raw or not t_raw or s_raw == t_raw:
+                continue
+
+            rel_valid = True
+            endpoints_to_check = [("source", s_raw), ("target", t_raw)]
+
+            for role, node_name in endpoints_to_check:
+                node_lower = node_name.lower()
+                if node_lower in std_map:
+                    # 已登记实体，标准化
+                    rel[role] = std_map[node_lower]
+                else:
+                    # 未登记端点：判断是否开启正则补漏
+                    if enabled:
+                        evidence = str(rel.get("evidence", ""))
+                        search_scope = f"{chunk_text}\n{evidence}"
+                        if self._is_entity_grounded_in_text(node_name, search_scope):
+                            # 🎉 正则兜底命中！第一轮漏检的文献真实体，立刻落实回填为正规实体
+                            print(f"   🔍 [正则兜底命中] 成功在文献中匹配到端点 '{node_name}'，已自动落实为真实实体！")
+                            rescued_ent = {
+                                "standard_name": node_name,
+                                "aliases": [],
+                                "category": "文献追溯实体",
+                                "doc_source": c_source
+                            }
+                            ents.append(rescued_ent)
+                            std_map[node_lower] = node_name
+                            rel[role] = node_name
+                            recovered_entities_count += 1
+                        else:
+                            # 🚫 文献无据，纯属模型幻觉捏造
+                            print(f"   🛡️ [幻觉终审拦截] 端点 '{node_name}' 未在文献原文中找到任何文字支撑，已安全剔除虚构关系: '{s_raw}' -> '{t_raw}'")
+                            rel_valid = False
+                            break
+                    else:
+                        # 补漏关闭：严格丢弃未登记端点
+                        print(f"   ⚠️ [未登记端点拦截] 端点 '{node_name}' 未在实体库中登记 (补漏开关已关闭)，已剔除该关系: '{s_raw}' -> '{t_raw}'")
+                        rel_valid = False
+                        break
+
+            if rel_valid:
+                valid_relations.append(rel)
+
+        if recovered_entities_count > 0:
+            print(f"   🧬 [切块汇总] 本切块通过正则文献兜底成功抢救落实了 {recovered_entities_count} 个漏检实体！")
+
+        return ents, valid_relations
+
+    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",output_lang="zh",progress_callback=None,concurrency=4,vision_strategy="off",vision_keyword="",vision_model=None,enable_relation_grounding=True):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
         current_source = os.path.basename(pdf_path)
@@ -259,6 +370,15 @@ class BioGraphPipeline:
                             rel["doc_source"] = c_source
                             original_reason = rel.get("reason", default_reason)
                             rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
+
+                # 3. 🔍 切块结束后的终审拦截与正则文献兜底追溯落实
+                ents, rels = self._ground_and_recover_chunk_hallucinations(
+                    chunk_text=chunk_text,
+                    ents=ents,
+                    rels=rels,
+                    c_source=c_source,
+                    enabled=enable_relation_grounding
+                )
 
                 return idx, ents, rels, None
             except Exception as exc:
