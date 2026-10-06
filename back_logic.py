@@ -64,7 +64,66 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",output_lang="zh",progress_callback=None,concurrency=4):
+    def _run_vision_stage(self, pdf_path, start_page, end_page, vision_strategy, vision_keyword, vision_model, source_name, current_source, entity_lang, is_en, report_progress):
+        if not vision_strategy or vision_strategy == "off":
+            return
+
+        source_prefix = "Source" if is_en else "源自"
+        print(f"👁️ [Pipeline] 启动机制图视觉分析 (策略: {vision_strategy}, 关键词: '{vision_keyword}')...")
+        msg_vision_init = (
+            f"📷 [Vision] Sniffing figures in pages {start_page + 1} to {end_page}..."
+            if is_en else
+            f"📷 [视觉解析] 正在检索第 {start_page + 1} 到 {end_page} 页的候选机制图..."
+        )
+        report_progress(0.96, 1.0, msg_vision_init)
+
+        figures = self.processor.extract_figures(
+            pdf_path,
+            start_page=start_page,
+            end_page=end_page,
+            mode=vision_strategy,
+            keyword=vision_keyword
+        )
+
+        if figures:
+            msg_fig_found = (
+                f"📷 [Vision] Found {len(figures)} candidate figure(s). Analyzing topology..."
+                if is_en else
+                f"📷 [视觉解析] 命中 {len(figures)} 张目标插图，正通过视觉模型解析拓扑网络..."
+            )
+            report_progress(0.97, 1.0, msg_fig_found)
+
+            for f_idx, fig in enumerate(figures):
+                fig_label = fig.get("label", f"Fig_{f_idx+1}")
+                fig_caption = fig.get("caption", "")
+                fig_page = fig.get("page", start_page + 1)
+
+                fig_ents, fig_rels = self.agent.extract_graph_from_figure(
+                    image_bytes=fig["image_bytes"],
+                    image_ext=fig.get("ext", "png"),
+                    caption=fig_caption,
+                    vision_model=vision_model,
+                    entity_lang=entity_lang
+                )
+
+                source_tag = f"{source_name} [Figure: {fig_label} (P.{fig_page})]"
+                for fe in fig_ents:
+                    if isinstance(fe, dict):
+                        fe["doc_source"] = source_tag
+                for fr in fig_rels:
+                    if isinstance(fr, dict):
+                        fr["doc_source"] = source_tag
+                        fr["weight"] = 1
+                        if "reason" not in fr:
+                            fr["reason"] = f"Visual Topology [{source_prefix}: {source_tag}]"
+
+                self._merge_entities(fig_ents)
+                self._merge_relations(fig_rels)
+        else:
+            if vision_strategy == "match" and vision_keyword:
+                print(f"ℹ️ [Pipeline] 未在选定页码中匹配到关键词 '{vision_keyword}' 的关联插图。")
+
+    def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",output_lang="zh",progress_callback=None,concurrency=4,vision_strategy="off",vision_keyword="",vision_model=None):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
         current_source = os.path.basename(pdf_path)
@@ -157,6 +216,12 @@ class BioGraphPipeline:
                     original_reason = rel.get("reason", default_reason)
                     rel["reason"] = f"{original_reason} [{source_prefix}: {current_source}]"
             self._merge_relations(chunk_relations)
+
+            self._run_vision_stage(
+                pdf_path, start_page, end_page,
+                vision_strategy, vision_keyword, vision_model,
+                source_name, current_source, entity_lang, is_en, report_progress
+            )
 
             print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")
             msg_done = f"✨ Analysis complete! Caught {len(self.global_entities)} entities, {len(self.global_relations)} relations." if is_en else f"✨ 分析完毕！本轮共捕获 {len(self.global_entities)} 个实体，{len(self.global_relations)} 条关系。"
@@ -264,6 +329,12 @@ class BioGraphPipeline:
                     original_reason = rel.get("reason", default_reason)
                     rel["reason"] = f"{original_reason} [{source_prefix}: {current_source}]"
             self._merge_relations(rels)
+
+        self._run_vision_stage(
+            pdf_path, start_page, end_page,
+            vision_strategy, vision_keyword, vision_model,
+            source_name, current_source, entity_lang, is_en, report_progress
+        )
 
         print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")
 

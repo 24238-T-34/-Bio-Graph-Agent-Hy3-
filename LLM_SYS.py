@@ -16,13 +16,14 @@ class BioBrainAgent:
 
         return raw_str.replace("```json", "").replace("```", "").strip()
 
-    def _ask_llm(self, system_prompt, user_content, max_retries=3, base_delay=2.0):
+    def _ask_llm(self, system_prompt, user_content, model_override=None, max_retries=3, base_delay=2.0):
+        target_model = model_override or self.model
         last_exception = None
         for attempt in range(max_retries):
             try:
                 # 发起真正的 API 请求
                 response = self.client.chat.completions.create(
-                    model=self.model,
+                    model=target_model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_content}
@@ -630,5 +631,81 @@ class BioBrainAgent:
         print(f"🧠 [Agent] 正在生成专属解读 (已启用 [{element_type}] 专属动态推演模板)...")
         raw_response = self._ask_llm(system_prompt, user_content)
         return raw_response
+
+    def extract_graph_from_figure(self, image_bytes, image_ext="png", caption="", vision_model=None, entity_lang="关闭 (保持原文语言)"):
+        """
+        多模态视觉智能体：专门分析生物文献中的信号通路图、机制假说图与图文摘要 (Pathway Diagrams)
+        """
+        import base64
+        b64_str = base64.b64encode(image_bytes).decode("utf-8")
+        clean_ext = image_ext.lower().replace(".", "")
+        mime_type = "image/jpeg" if clean_ext in ["jpg", "jpeg"] else "image/png"
+
+        language_instruction = ""
+        if "中文" in entity_lang:
+            language_instruction = "\n【⚠️ 语言强力约束】：请务必将提取出的所有实体的“standard_name”统一翻译并输出为规范的【中文名称】（通用学术英文专有缩写可保留）。"
+        elif "English" in entity_lang:
+            language_instruction = "\n【⚠️ 语言强力约束】：请务必将提取出的所有实体的“standard_name”统一输出为规范的【英文 (English)】。"
+
+        system_prompt = f"""你是一位顶尖的生物医学多模态与系统生物学分析专家。
+你的任务是解析生物文献中的【信号通路图 / 机制假说图 / 图文摘要 (Pathway Diagram / Mechanism Figure)】，提取图中所描绘的核心生物学实体及其相互调控网络。
+
+【⚠️ 视觉拓扑理解核心规则】：
+1. 识别生化实体 (Entities)：
+   - 包括蛋白质、受体、酶、基因、转录因子、小分子化合物/药物、复合物或细胞表型/疾病节点。
+   - 给出每个实体的 standard_name（标准名称）与 category（分类，如 Gene/Protein, Chemical, Disease/Phenotype, Cellular Component 等）。
+   - 保留图中标识的亚细胞空间定位或修饰状态（如在核内、胞质、膜上，或磷酸化 p-XXX）。
+
+2. 识别有向调控关系 (Relations)：
+   - 【正向调控】：尖头箭头 (➔ 或 ->)，表示上调、激活、促进、诱导。
+   - 【负向调控】：平头阻断线 (┫)，表示下调、阻断、抑制、拮抗。
+   - 【物理结合 / 相互作用】：双向箭头或接触连线，表示形成复合物、物理结合。
+   - 【生化反应 / 易位】：修饰转化、磷酸化、入核/转运。
+   - 提取规范三元组：source (作用源), target (受作用方), relation (从 '正向调控', '负向调控', '物理结合', '生化反应', '相关关联' 中选取), evidence (简短描述图中的视觉拓扑依据，如 '图中显示A通过箭头激活B')。
+
+3. 输出格式强力约束：
+   - 必须且仅输出严格合法的 JSON 代码块，严禁包含任何前缀或后缀闲聊：
+```json
+{{
+  "entities": [
+    {{"standard_name": "...", "category": "...", "aliases": []}}
+  ],
+  "relations": [
+    {{"source": "...", "target": "...", "relation": "正向调控", "evidence": "..."}}
+  ]
+}}
+```{language_instruction}
+"""
+
+        caption_info = f"\n【插图关联图注说明】：{caption}" if caption else ""
+        prompt_text = (
+            f"请仔细分析这张文献中的插图。{caption_info}\n"
+            "重点识别其中的生化分子、受体、基因、蛋白复合物及它们之间的箭头调控拓扑网络。"
+            "严格区分激活箭头 (➔) 与抑制平头线 (┫)，按规范输出 JSON。"
+        )
+
+        multimodal_content = [
+            {"type": "text", "text": prompt_text},
+            {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64_str}"}}
+        ]
+
+        effective_model = vision_model or self.model
+        print(f"👁️ [Agent] 正在调用专职视觉模型解析机制图 (模型: {effective_model})...")
+        try:
+            raw_response = self._ask_llm(
+                system_prompt=system_prompt,
+                user_content=multimodal_content,
+                model_override=vision_model
+            )
+            cleaned = self._clean_json_string(raw_response)
+            data = json.loads(cleaned)
+            entities = data.get("entities", [])
+            relations = data.get("relations", [])
+            print(f"✅ [Agent] 机制图解析成功！捕获 {len(entities)} 个实体，{len(relations)} 条视觉调控关系。")
+            return entities, relations
+        except Exception as e:
+            print(f"⚠️ [Agent] 机制图解析失败或模型未返回有效JSON: {e}")
+            return [], []
+
 
 

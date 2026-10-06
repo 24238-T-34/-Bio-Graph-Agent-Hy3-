@@ -265,7 +265,12 @@ def load_config():
             "concurrency_workers": 4,
             "ENABLE_EDITOR": True,  # ✨ 恢复的开关 1
             "ENABLE_AI_CLEANER": True,  # ✨ 恢复的开关 2
-            "ui_language": "zh"
+            "ui_language": "zh",
+            "vision_strategy": "opt_off",
+            "vision_match_keyword": "",
+            "vision_model_choice": "auto",
+            "vision_model_suffix": "",
+            "custom_vision_model_id": ""
         }
 
         if os.path.exists(CONFIG_FILE):
@@ -291,12 +296,49 @@ def save_config():
     config_keys = [
         "api_provider", "custom_base_url", "selected_model_name", "custom_model_id", "model_suffix",
         "search_database", "is_summary_only", "use_reflection", "append_mode",
-        "entity_language", "concurrency_workers", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language"
+        "entity_language", "concurrency_workers", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language",
+        "vision_strategy", "vision_match_keyword", "vision_model_choice", "vision_model_suffix", "custom_vision_model_id"
     ]
     # 注意：这里已经没有 empower_ontology 等绘图参数了
     config_to_save = {k: st.session_state[k] for k in config_keys if k in st.session_state}
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(config_to_save, f, indent=4)
+
+
+def resolve_vision_model_id(main_model_id, vision_choice, vision_suffix):
+    """
+    智能解析专职视觉模型 ID：
+    - 若指定预设或自定义模型，则直接使用；
+    - 若选择自由跟随，极简匹配已有模型（gemini, glm, deepseek）则跟随主模型，否则安全分流到 gemini-2.5-flash-lite；
+    - 拼接视觉后缀（若有）。
+    """
+    preset_map = {
+        "gemini_2_5_flash_lite": "google/gemini-2.5-flash-lite",
+        "gemini_3_8_flash": "google/gemini-3.8-flash",
+        "qwen_2_5_vl_72b": "qwen/qwen-2.5-vl-72b-instruct"
+    }
+
+    if vision_choice in preset_map:
+        base_id = preset_map[vision_choice]
+    elif vision_choice != "auto" and vision_choice:
+        base_id = vision_choice
+    else:
+        # 自由跟随主模型模式：极简匹配已知多模态模型
+        mid = (main_model_id or "").lower()
+        if any(k in mid for k in ["gemini", "glm", "deepseek"]):
+            base_id = main_model_id
+        else:
+            base_id = "google/gemini-2.5-flash-lite"
+
+    if vision_suffix and vision_suffix.strip():
+        s = vision_suffix.strip()
+        if s.startswith(":"):
+            return f"{base_id}{s}"
+        elif "/" in s:
+            return s
+        else:
+            return f"{base_id}:{s}"
+    return base_id
 
 
 def redraw_and_update():
@@ -492,6 +534,23 @@ UI_TEXT = {
     "entity_lang_opt_original": {"zh": "关闭 (保持原文语言)", "en": "Off (Keep Original Language)"},
     "entity_lang_opt_zh": {"zh": "中文 (强制翻译为中文)", "en": "Chinese (Force Translate to Chinese)"},
     "entity_lang_opt_en": {"zh": "English (强制翻译为英文)", "en": "English (Force Translate to English)"},
+
+    # 机制图视觉解析策略
+    "vision_strategy_title": {"zh": "📷 机制图/通路图解析策略", "en": "📷 Pathway Figure Strategy"},
+    "vision_strategy_opt_off": {"zh": "🚫 关闭 (纯文本)", "en": "🚫 Off (Text Only)"},
+    "vision_strategy_opt_match": {"zh": "🎯 精准匹配 (输入图号)", "en": "🎯 Keyword Match"},
+    "vision_strategy_opt_all": {"zh": "⚡ 选定页全开 (提取全部插图)", "en": "⚡ Extract All in Pages"},
+    "vision_keyword_label": {"zh": "🔍 匹配图号/特征词", "en": "🔍 Figure Keyword"},
+    "vision_keyword_placeholder": {"zh": "如: Fig 4, pathway, Figure 2", "en": "e.g. Fig 4, pathway, Figure 2"},
+    "sidebar_expander_advanced_models": {"zh": "🛠️ 模型微调与视觉高级设置", "en": "🛠️ Model Tuning & Vision Settings"},
+    "sidebar_vision_model_select": {"zh": "👁️ 专职视觉模型", "en": "👁️ Dedicated Vision Model"},
+    "sidebar_vision_model_suffix": {"zh": "🏷️ 视觉模型后缀 (可选)", "en": "🏷️ Vision Model Suffix (Optional)"},
+    "sidebar_vision_model_suffix_placeholder": {"zh": "如 :free 或完整模型名", "en": "e.g. :free or model ID"},
+    "vision_model_auto": {"zh": "🔄 自由跟随主模型 (智能自适应)", "en": "🔄 Auto-follow Main Model"},
+    "vision_model_gemini_2_5_flash_lite": {"zh": "Gemini 2.5 Flash-Lite (极速推荐)", "en": "Gemini 2.5 Flash-Lite (Recommended)"},
+    "vision_model_gemini_3_8_flash": {"zh": "Gemini 3.8 Flash (高智商旗舰)", "en": "Gemini 3.8 Flash (Flagship)"},
+    "vision_model_qwen_2_5_vl_72b": {"zh": "Qwen 2.5 VL 72B (千问视觉旗舰)", "en": "Qwen 2.5 VL 72B (Vision Flagship)"},
+    "vision_model_custom": {"zh": "自定义视觉模型...", "en": "Custom Vision Model..."},
 
     # 追加模式提示
     "append_info_ready": {"zh": "📦 记忆库就绪：当前已有 {count} 个节点。新知识将与之融合！", "en": "📦 Memory Bank Ready: Currently {count} nodes. New knowledge will be merged!"},
@@ -969,16 +1028,51 @@ with st.sidebar:
 
             base_model_id = model_options[current_model]
 
-            # 🛡️ 核心保底：允许用户自定义模型后缀或全量覆盖
-            model_suffix = st.text_input(
-                t("sidebar_model_suffix"),
-                key="model_suffix",
-                placeholder=t("sidebar_model_suffix_placeholder"),
-                help=t("sidebar_model_suffix_help"),
-                on_change=save_config
-            )
+            # 🛠️ 二级高级设置：收纳视觉模型选择、视觉模型后缀与主模型后缀
+            with st.expander(t("sidebar_expander_advanced_models"), expanded=False):
+                # 1. 专职视觉模型选择
+                vision_model_options = {
+                    "auto": t("vision_model_auto"),
+                    "gemini_2_5_flash_lite": t("vision_model_gemini_2_5_flash_lite"),
+                    "gemini_3_8_flash": t("vision_model_gemini_3_8_flash"),
+                    "qwen_2_5_vl_72b": t("vision_model_qwen_2_5_vl_72b"),
+                    "custom": t("vision_model_custom")
+                }
+                current_vision_choice = st.session_state.get("vision_model_choice", "auto")
+                vision_choice_keys = list(vision_model_options.keys())
+                v_idx = vision_choice_keys.index(current_vision_choice) if current_vision_choice in vision_choice_keys else 0
+
+                selected_v_key = st.selectbox(
+                    t("sidebar_vision_model_select"),
+                    vision_choice_keys,
+                    format_func=lambda k: vision_model_options.get(k, k),
+                    index=v_idx,
+                    key="vision_model_choice",
+                    on_change=save_config
+                )
+
+                if selected_v_key == "custom":
+                    st.text_input("🔗 自定义视觉模型 ID", key="custom_vision_model_id", on_change=save_config)
+
+                # 2. 视觉模型自定义后缀
+                st.text_input(
+                    t("sidebar_vision_model_suffix"),
+                    key="vision_model_suffix",
+                    placeholder=t("sidebar_vision_model_suffix_placeholder"),
+                    on_change=save_config
+                )
+
+                # 3. 普通主模型后缀 (收拢至此)
+                st.text_input(
+                    t("sidebar_model_suffix"),
+                    key="model_suffix",
+                    placeholder=t("sidebar_model_suffix_placeholder"),
+                    help=t("sidebar_model_suffix_help"),
+                    on_change=save_config
+                )
 
             # 智能合成最终使用的模型 ID
+            model_suffix = st.session_state.get("model_suffix", "")
             if model_suffix and model_suffix.strip():
                 s = model_suffix.strip()
                 if s.startswith(":"):
@@ -994,6 +1088,11 @@ with st.sidebar:
 
             # 实时回显生效的 ID
             st.caption(f"🚀 {t('sidebar_model_active_preview')} `{selected_model_id}`")
+
+        # 智能解析当前生效的专职视觉模型 ID
+        v_choice = st.session_state.get("custom_vision_model_id") if st.session_state.get("vision_model_choice") == "custom" else st.session_state.get("vision_model_choice", "auto")
+        v_suffix = st.session_state.get("vision_model_suffix", "")
+        resolved_vision_model_id = resolve_vision_model_id(selected_model_id, v_choice, v_suffix)
 
         st.markdown("---")
         st.markdown(t("sidebar_db_title"))
@@ -1230,6 +1329,43 @@ with left_col:
         if is_summary_only and (end_page - start_page > 2):
             st.warning(t("warn_summary_range"))
 
+        # 📷 机制图/通路图解析策略 (深度融合)
+        st.markdown(f"**{t('vision_strategy_title')}**")
+        v_strategy_keys = ["opt_off", "opt_match", "opt_all"]
+        v_strategy_labels = {
+            "opt_off": t("vision_strategy_opt_off"),
+            "opt_match": t("vision_strategy_opt_match"),
+            "opt_all": t("vision_strategy_opt_all")
+        }
+        cur_v_strat = st.session_state.get("vision_strategy", "opt_off")
+        cur_v_idx = v_strategy_keys.index(cur_v_strat) if cur_v_strat in v_strategy_keys else 0
+
+        col_v1, col_v2 = st.columns([3, 2])
+        with col_v1:
+            selected_v_strat = st.radio(
+                t("vision_strategy_title"),
+                options=v_strategy_keys,
+                format_func=lambda k: v_strategy_labels.get(k, k),
+                index=cur_v_idx,
+                key="vision_strategy",
+                horizontal=True,
+                label_visibility="collapsed",
+                on_change=save_config
+            )
+
+        vision_keyword_val = st.session_state.get("vision_match_keyword", "")
+        if selected_v_strat == "opt_match":
+            with col_v2:
+                vision_keyword_val = st.text_input(
+                    t("vision_keyword_label"),
+                    key="vision_match_keyword",
+                    placeholder=t("vision_keyword_placeholder"),
+                    label_visibility="collapsed",
+                    on_change=save_config
+                )
+
+        final_vision_mode = "off" if selected_v_strat == "opt_off" else ("match" if selected_v_strat == "opt_match" else "all")
+
         st.divider()
         start_button = st.button(t("btn_start_parsing"), use_container_width=True, type="primary")
 
@@ -1449,7 +1585,10 @@ if uploaded_file and start_button:
                     entity_lang=entity_language,
                     progress_callback=update_ui_progress,
                     output_lang=st.session_state.get("ui_language", "zh"),
-                    concurrency=concurrency_workers
+                    concurrency=concurrency_workers,
+                    vision_strategy=final_vision_mode if 'final_vision_mode' in locals() else "off",
+                    vision_keyword=vision_keyword_val if 'vision_keyword_val' in locals() else "",
+                    vision_model=resolved_vision_model_id if 'resolved_vision_model_id' in locals() else None
                 )
 
             # 🟢 阶段二：独立的融合转圈 (上一个转圈已经销毁)

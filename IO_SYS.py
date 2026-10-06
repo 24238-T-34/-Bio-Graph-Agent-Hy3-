@@ -112,6 +112,87 @@ class PDFProcessor:
                 return extracted
         return None
 
+    def extract_figures(self, pdf_path, start_page=0, end_page=None, mode="off", keyword="", min_size=200):
+        """
+        从选定页码中提取目标插图及关联图注
+        :param mode: 'off' | 'match' | 'all'
+        :param keyword: 精准匹配词（如 'Fig 4', 'Figure 2', 'pathway'）
+        :param min_size: 最小像素宽高过滤阀值，避免图标与分割线
+        :return: List[dict] [{'image_bytes': b'...', 'ext': 'png', 'page': 5, 'caption': '...', 'label': 'Fig 4'}]
+        """
+        if mode == "off" or not os.path.exists(pdf_path):
+            return []
+
+        matched_figures = []
+        try:
+            import fitz
+            doc = fitz.open(pdf_path)
+            total_pages = len(doc)
+            if end_page is None or end_page > total_pages:
+                end_page = total_pages
+
+            kw_clean = keyword.strip() if keyword else ""
+            # 模式 2：精准匹配
+            if mode == "match" and kw_clean:
+                # 智能识别数字编号（如 "Fig 4", "Fig. 4", "Figure 4", "4"）或普通关键词（如 "pathway"）
+                kw_num_match = re.search(r"(?:fig(?:ure)?\.?\s*)?(\d+[a-zA-Z]?)", kw_clean, re.IGNORECASE)
+                if kw_num_match and kw_num_match.group(1):
+                    fig_num = kw_num_match.group(1)
+                    pattern_str = rf"(?:fig(?:ure)?\.?\s*{re.escape(fig_num)}\b|{re.escape(kw_clean)})"
+                else:
+                    pattern_str = re.escape(kw_clean)
+
+                kw_pattern = re.compile(pattern_str, re.IGNORECASE)
+
+                for page_idx in range(start_page, end_page):
+                    page = doc[page_idx]
+                    page_num = page_idx + 1
+                    page_text = page.get_text()
+
+                    captions = list(kw_pattern.finditer(page_text))
+                    if captions:
+                        matched_caption = captions[0].group(0).strip()
+                        img_list = page.get_images()
+                        for img_info in img_list:
+                            xref = img_info[0]
+                            base_img = doc.extract_image(xref)
+                            w, h = base_img["width"], base_img["height"]
+                            if (w >= min_size and h >= min_size) or (w * h >= 60000):
+                                matched_figures.append({
+                                    "image_bytes": base_img["image"],
+                                    "ext": base_img["ext"],
+                                    "page": page_num,
+                                    "caption": matched_caption,
+                                    "label": kw_clean
+                                })
+                                break
+                        if matched_figures:
+                            break
+
+            # 模式 3：全开模式 (过滤掉微型图标和公式位图)
+            elif mode == "all":
+                for page_idx in range(start_page, end_page):
+                    page = doc[page_idx]
+                    page_num = page_idx + 1
+                    img_list = page.get_images()
+                    for idx, img_info in enumerate(img_list):
+                        xref = img_info[0]
+                        base_img = doc.extract_image(xref)
+                        w, h = base_img["width"], base_img["height"]
+                        if (w >= min_size and h >= min_size) or (w * h >= 60000):
+                            matched_figures.append({
+                                "image_bytes": base_img["image"],
+                                "ext": base_img["ext"],
+                                "page": page_num,
+                                "caption": f"Page {page_num} Figure {idx + 1}",
+                                "label": f"Page{page_num}_Fig{idx + 1}"
+                            })
+
+            doc.close()
+        except Exception as e:
+            print(f"⚠️ [PDFProcessor] 机制图提取遇到异常: {e}")
+
+        return matched_figures
 
 
 # =====================================================================
