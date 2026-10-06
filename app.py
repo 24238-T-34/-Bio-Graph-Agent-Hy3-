@@ -457,6 +457,7 @@ UI_TEXT = {
         "en": "Enter a suffix (e.g. :free) to append to the model, or enter a full model ID to override."
     },
     "sidebar_model_active_preview": {"zh": "当前生效模型: ", "en": "Active Model: "},
+    "sidebar_vision_model_active_preview": {"zh": "生效视觉模型: ", "en": "Active Vision Model: "},
     "sidebar_db_title": {"zh": "#### 📚 智能检索源", "en": "#### 📚 Smart Search Source"},
     "sidebar_db_select": {"zh": "数据库", "en": "Database"},
     "sidebar_features_title": {"zh": "#### 🎛️ 界面功能开关", "en": "#### 🎛️ Feature Toggles"},
@@ -1006,6 +1007,7 @@ with st.sidebar:
         if is_local_or_custom:
             # 对于本地或自定义源，只能手填模型 ID
             selected_model_id = st.text_input(t("sidebar_model_id_custom"), key="custom_model_id", on_change=save_config)
+            resolved_vision_model_id = selected_model_id
         else:
             # 对于云端源，使用你极其优雅的字典映射
             model_options = {
@@ -1071,28 +1073,30 @@ with st.sidebar:
                     on_change=save_config
                 )
 
-            # 智能合成最终使用的模型 ID
-            model_suffix = st.session_state.get("model_suffix", "")
-            if model_suffix and model_suffix.strip():
-                s = model_suffix.strip()
-                if s.startswith(":"):
-                    selected_model_id = f"{base_model_id}{s}"
-                elif "/" in s:
-                    # 包含斜杠则判定为全量自定义模型 ID（如 meta-llama/llama-3.3-70b-instruct）
-                    selected_model_id = s
+                # 智能合成最终使用的模型 ID
+                model_suffix = st.session_state.get("model_suffix", "")
+                if model_suffix and model_suffix.strip():
+                    s = model_suffix.strip()
+                    if s.startswith(":"):
+                        selected_model_id = f"{base_model_id}{s}"
+                    elif "/" in s:
+                        # 包含斜杠则判定为全量自定义模型 ID（如 meta-llama/llama-3.3-70b-instruct）
+                        selected_model_id = s
+                    else:
+                        # 未输入冒号但输入了后缀（如 free）自动补齐冒号后缀
+                        selected_model_id = f"{base_model_id}:{s}"
                 else:
-                    # 未输入冒号但输入了后缀（如 free）自动补齐冒号后缀
-                    selected_model_id = f"{base_model_id}:{s}"
-            else:
-                selected_model_id = base_model_id
+                    selected_model_id = base_model_id
 
-            # 实时回显生效的 ID
-            st.caption(f"🚀 {t('sidebar_model_active_preview')} `{selected_model_id}`")
+                # 智能解析当前生效的专职视觉模型 ID
+                v_choice = st.session_state.get("custom_vision_model_id") if st.session_state.get("vision_model_choice") == "custom" else st.session_state.get("vision_model_choice", "auto")
+                v_suffix = st.session_state.get("vision_model_suffix", "")
+                resolved_vision_model_id = resolve_vision_model_id(selected_model_id, v_choice, v_suffix)
 
-        # 智能解析当前生效的专职视觉模型 ID
-        v_choice = st.session_state.get("custom_vision_model_id") if st.session_state.get("vision_model_choice") == "custom" else st.session_state.get("vision_model_choice", "auto")
-        v_suffix = st.session_state.get("vision_model_suffix", "")
-        resolved_vision_model_id = resolve_vision_model_id(selected_model_id, v_choice, v_suffix)
+                # 实时回显生效的 ID (统一收拢在折叠菜单内部)
+                st.markdown("---")
+                st.caption(f"🚀 {t('sidebar_model_active_preview')} `{selected_model_id}`")
+                st.caption(f"👁️ {t('sidebar_vision_model_active_preview')} `{resolved_vision_model_id}`")
 
         st.markdown("---")
         st.markdown(t("sidebar_db_title"))
