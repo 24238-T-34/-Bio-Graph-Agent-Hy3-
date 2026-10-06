@@ -1,6 +1,8 @@
 import streamlit as st
 import tempfile
 import os
+import shutil
+from datetime import datetime
 from pypdf import PdfReader
 from back_logic import BioGraphPipeline,GraphVisualizer
 import streamlit.components.v1 as components
@@ -384,21 +386,113 @@ def redraw_and_update():
 
 
 LOCAL_VAULT_FILE = ".current_project.biokg"
+PROJECTS_ROOT_DIR = "projects"
+os.makedirs(PROJECTS_ROOT_DIR, exist_ok=True)
+HISTORY_DIR = ".history_docs"
+os.makedirs(HISTORY_DIR, exist_ok=True)
+
+
+def generate_project_id() -> str:
+    """生成唯一且格式规范的工程内部唯一标识 (ID)"""
+    return f"proj_{datetime.now().strftime('%Y%m%d%H%M%S')}_{uuid.uuid4().hex[:6]}"
+
+
+def get_current_project_id() -> str:
+    """获取当前活动工程的内部唯一 ID（若无则自动生成）"""
+    if "current_project_id" not in st.session_state or not st.session_state.current_project_id:
+        st.session_state.current_project_id = generate_project_id()
+    return st.session_state.current_project_id
+
+
+def get_current_project_name() -> str:
+    """获取当前活动工程的用户可读名称（作为属性值存储，不作为物理路径或文件名）"""
+    if "current_project_name" not in st.session_state or not st.session_state.current_project_name:
+        st.session_state.current_project_name = "默认课题"
+    return str(st.session_state.current_project_name).strip() or "默认课题"
+
+
+def get_project_dir_by_id(project_id: str) -> str:
+    """根据工程唯一 ID 获取对应的物理目录 projects/{project_id}/"""
+    clean_id = re.sub(r'[\\/*?:"<>|]', "_", str(project_id).strip())
+    pdir = os.path.join(PROJECTS_ROOT_DIR, clean_id)
+    os.makedirs(pdir, exist_ok=True)
+    return pdir
+
+
+def get_project_papers_dir_by_id(project_id: str) -> str:
+    """根据工程唯一 ID 获取文献存放目录"""
+    pdir = get_project_dir_by_id(project_id)
+    papers_dir = os.path.join(pdir, "papers")
+    os.makedirs(papers_dir, exist_ok=True)
+    return papers_dir
+
+
+def get_current_papers_dir() -> str:
+    """获取当前活动工程的文献存放目录"""
+    return get_project_papers_dir_by_id(get_current_project_id())
+
+
+def find_project_by_id_or_name(proj_id: str, proj_name: str) -> str:
+    """根据 project_id 或 project_name 在本地 projects/ 目录中检索已有的工程目录 ID"""
+    if proj_id and os.path.exists(os.path.join(PROJECTS_ROOT_DIR, proj_id)):
+        return proj_id
+    if proj_name and os.path.exists(PROJECTS_ROOT_DIR):
+        for pid in os.listdir(PROJECTS_ROOT_DIR):
+            pkg_file = os.path.join(PROJECTS_ROOT_DIR, pid, "project.biokg")
+            if os.path.exists(pkg_file):
+                try:
+                    with open(pkg_file, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                    if meta.get("project_name") == proj_name:
+                        return pid
+                except Exception:
+                    pass
+    return proj_id if proj_id else generate_project_id()
+
+
+def save_analyzed_paper(file_name: str, file_bytes: bytes):
+    """保存解析的论文到当前工程的 papers 目录，并在 .history_docs 建立兼容副本"""
+    target_dir = get_current_papers_dir()
+    fpath = os.path.join(target_dir, file_name)
+    with open(fpath, "wb") as f:
+        f.write(file_bytes)
+    # 兼容历史老版本目录
+    hist_path = os.path.join(HISTORY_DIR, file_name)
+    try:
+        with open(hist_path, "wb") as f:
+            f.write(file_bytes)
+    except Exception:
+        pass
 
 
 def save_local_vault():
-    """将当前记忆库（实体、关系、历史文献）原地覆写保存到固定本地工程文件（类似Word保存，绝对单文件直接截断覆写，绝不生成副本）"""
+    """将当前记忆库（实体、关系、历史文献、工程 ID 与名称）原地覆写保存到活动缓存及专属归档"""
+    proj_id = get_current_project_id()
+    proj_name = get_current_project_name()
     if "master_entities" in st.session_state and st.session_state.master_entities:
         data = {
+            "version": "1.0",
+            "project_id": proj_id,
+            "project_name": proj_name,
             "entities": st.session_state.master_entities,
             "relations": st.session_state.get("master_relations", []),
             "analyzed_files": st.session_state.get("analyzed_files", [])
         }
+        # 1. 保存到根目录临时缓存，保障刷新页面状态持久化
         try:
             with open(LOCAL_VAULT_FILE, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             print(f"本地记忆库自动写入失败: {e}")
+
+        # 2. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg
+        try:
+            proj_dir = get_project_dir_by_id(proj_id)
+            proj_biokg = os.path.join(proj_dir, "project.biokg")
+            with open(proj_biokg, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"工程专属记忆库写入失败: {e}")
 
 
 def load_local_vault():
@@ -412,6 +506,8 @@ def load_local_vault():
                 st.session_state.master_entities = entities
                 st.session_state.master_relations = data.get("relations", [])
                 st.session_state.analyzed_files = data.get("analyzed_files", [])
+                st.session_state.current_project_id = data.get("project_id", generate_project_id())
+                st.session_state.current_project_name = data.get("project_name", "默认课题")
                 st.session_state.show_results = True
                 redraw_and_update()
         except Exception as e:
@@ -419,7 +515,7 @@ def load_local_vault():
 
 
 def clear_local_vault():
-    """新建空白工程时，物理删除本地记忆库文件，避免残留恢复"""
+    """新建空白工程时，物理删除本地临时工程缓存，避免残留恢复（不影响 projects/ 下的历史工程文件）"""
     if os.path.exists(LOCAL_VAULT_FILE):
         try:
             os.remove(LOCAL_VAULT_FILE)
@@ -588,6 +684,23 @@ UI_TEXT = {
     "upload_project": {"zh": "📥 载入历史工程文件 (.biokg / .json)", "en": "📥 Load History Project (.biokg / .json)"},
     "btn_confirm_load": {"zh": "🚀 确认载入该工程", "en": "🚀 Confirm Load Project"},
     "err_load_project": {"zh": "解析工程文件失败，请检查文件格式是否正确。报错信息: {e}", "en": "Failed to parse project file. Check format. Error: {e}"},
+    "project_name_label": {"zh": "🏷️ 项目课题名称", "en": "🏷️ Project Topic Name"},
+    "project_name_help": {"zh": "当前研究课题名称，导出与归档目录均将以此命名", "en": "Current topic name; used for export filename and project folder"},
+    "archive_mgr_title": {"zh": "🗄️ 磁盘空间与工程归档管理", "en": "🗄️ Disk Space & Project Archive Management"},
+    "btn_clean_orphans": {"zh": "🧹 清理当前工程孤儿文献", "en": "🧹 Clean Orphaned Literature"},
+    "help_clean_orphans": {"zh": "清除当前工程文献库中没有任何实体或关系引用的无用文献", "en": "Remove unused papers in current project that have no node/edge references"},
+    "toast_orphans_cleaned": {"zh": "✅ 已安全清理 {count} 篇孤儿文献！", "en": "✅ Safely cleaned {count} orphaned papers!"},
+    "toast_no_orphans": {"zh": "✨ 当前工程文献均有图谱引用，无孤儿文献。", "en": "✨ All papers are referenced by graph nodes, no orphans."},
+    "orphan_found_count": {"zh": "发现 {count} 篇无引用文献", "en": "Found {count} unreferenced papers"},
+    "orphan_none": {"zh": "无孤儿文献", "en": "No orphans"},
+    "manage_projects_expander": {"zh": "🗂️ 本地历史工程库清理", "en": "🗂️ Manage & Clean Historical Projects"},
+    "no_saved_projects": {"zh": "暂无已归档的历史工程。", "en": "No archived historical projects."},
+    "badge_current": {"zh": "当前活动", "en": "Active"},
+    "unit_papers": {"zh": "篇文献", "en": "papers"},
+    "btn_del_proj_help": {"zh": "彻底删除历史工程文件夹 {name}，释放磁盘空间", "en": "Delete historical project folder {name} and free disk space"},
+    "warn_del_proj_confirm": {"zh": "⚠️ 确认彻底删除历史工程【{name}】及其所有文献吗？此操作无法撤销。", "en": "⚠️ Confirm deleting project [{name}] and all its papers? This cannot be undone."},
+    "btn_confirm_del": {"zh": "确认彻底删除", "en": "Confirm Delete"},
+    "toast_proj_deleted": {"zh": "工程 {name} 已彻底删除", "en": "Project {name} permanently deleted"},
     # 核心引擎触发区 (图谱生成、洗树、融合、渲染)
     "err_missing_api_key": {"zh": "请先在左侧输入 API Key！", "en": "Please enter API Key on the left first!"},
     "msg_parsing_pages": {"zh": "🧠 智能体正在解析第 {start} 到 {end} 页...", "en": "🧠 Agent is parsing pages {start} to {end}..."},
@@ -908,9 +1021,6 @@ with btn_col:
         show_help_dialog()
 st.markdown("---")
 # 📁 创建一个持久化文件夹，用来保存所有分析过的原文
-HISTORY_DIR = ".history_docs"
-os.makedirs(HISTORY_DIR, exist_ok=True)
-
 # 初始化全局图谱记忆中枢
 if "master_entities" not in st.session_state:
     st.session_state.master_entities = []
@@ -923,9 +1033,13 @@ if "html_data" not in st.session_state:
 if "pubmed_search_results" not in st.session_state:
     st.session_state.pubmed_search_results = []
 
-# 📝 初始化历史文献列表
+# 📝 初始化历史文献列表与课题工程 ID / 名称
 if "analyzed_files" not in st.session_state:
     st.session_state.analyzed_files = []
+if "current_project_id" not in st.session_state:
+    st.session_state.current_project_id = ""
+if "current_project_name" not in st.session_state:
+    st.session_state.current_project_name = "默认课题"
 
 load_config()
 load_local_vault()
@@ -1313,6 +1427,43 @@ with left_col:
     }
     entity_language = backend_lang_map[selected_lang_key]
 
+    # 📷 机制图/通路图解析策略 (深度融合，置于提取模式设置下，保证未上传文件时也能渲染和配置)
+    st.markdown(f"**{t('vision_strategy_title')}**")
+    v_strategy_keys = ["opt_off", "opt_match", "opt_all"]
+    v_strategy_labels = {
+        "opt_off": t("vision_strategy_opt_off"),
+        "opt_match": t("vision_strategy_opt_match"),
+        "opt_all": t("vision_strategy_opt_all")
+    }
+    cur_v_strat = st.session_state.get("vision_strategy", "opt_off")
+    cur_v_idx = v_strategy_keys.index(cur_v_strat) if cur_v_strat in v_strategy_keys else 0
+
+    col_v1, col_v2 = st.columns([3, 2])
+    with col_v1:
+        selected_v_strat = st.radio(
+            t("vision_strategy_title"),
+            options=v_strategy_keys,
+            format_func=lambda k: v_strategy_labels.get(k, k),
+            index=cur_v_idx,
+            key="vision_strategy",
+            horizontal=True,
+            label_visibility="collapsed",
+            on_change=save_config
+        )
+
+    vision_keyword_val = st.session_state.get("vision_match_keyword", "")
+    if selected_v_strat == "opt_match":
+        with col_v2:
+            vision_keyword_val = st.text_input(
+                t("vision_keyword_label"),
+                key="vision_match_keyword",
+                placeholder=t("vision_keyword_placeholder"),
+                label_visibility="collapsed",
+                on_change=save_config
+            )
+
+    final_vision_mode = "off" if selected_v_strat == "opt_off" else ("match" if selected_v_strat == "opt_match" else "all")
+
     if append_mode and len(st.session_state.master_entities) > 0:
         st.info(t("append_info_ready").format(count=len(st.session_state.master_entities)))
     elif not append_mode and len(st.session_state.master_entities) > 0:
@@ -1333,43 +1484,6 @@ with left_col:
         if is_summary_only and (end_page - start_page > 2):
             st.warning(t("warn_summary_range"))
 
-        # 📷 机制图/通路图解析策略 (深度融合)
-        st.markdown(f"**{t('vision_strategy_title')}**")
-        v_strategy_keys = ["opt_off", "opt_match", "opt_all"]
-        v_strategy_labels = {
-            "opt_off": t("vision_strategy_opt_off"),
-            "opt_match": t("vision_strategy_opt_match"),
-            "opt_all": t("vision_strategy_opt_all")
-        }
-        cur_v_strat = st.session_state.get("vision_strategy", "opt_off")
-        cur_v_idx = v_strategy_keys.index(cur_v_strat) if cur_v_strat in v_strategy_keys else 0
-
-        col_v1, col_v2 = st.columns([3, 2])
-        with col_v1:
-            selected_v_strat = st.radio(
-                t("vision_strategy_title"),
-                options=v_strategy_keys,
-                format_func=lambda k: v_strategy_labels.get(k, k),
-                index=cur_v_idx,
-                key="vision_strategy",
-                horizontal=True,
-                label_visibility="collapsed",
-                on_change=save_config
-            )
-
-        vision_keyword_val = st.session_state.get("vision_match_keyword", "")
-        if selected_v_strat == "opt_match":
-            with col_v2:
-                vision_keyword_val = st.text_input(
-                    t("vision_keyword_label"),
-                    key="vision_match_keyword",
-                    placeholder=t("vision_keyword_placeholder"),
-                    label_visibility="collapsed",
-                    on_change=save_config
-                )
-
-        final_vision_mode = "off" if selected_v_strat == "opt_off" else ("match" if selected_v_strat == "opt_match" else "all")
-
         st.divider()
         start_button = st.button(t("btn_start_parsing"), use_container_width=True, type="primary")
 
@@ -1377,23 +1491,14 @@ with left_col:
 # 📁 后置侧边栏扩展区
 # ==========================================
 if uploaded_file and start_button:
+    file_bytes = uploaded_file.getvalue()
+    save_analyzed_paper(uploaded_file.name, file_bytes)
     if append_mode:
-        save_path = os.path.join(HISTORY_DIR, uploaded_file.name)
-        with open(save_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-
         if uploaded_file.name not in st.session_state.analyzed_files:
             st.session_state.analyzed_files.append(uploaded_file.name)
     else:
-        st.session_state.analyzed_files = []
-        if os.path.exists(HISTORY_DIR):
-            for fname in os.listdir(HISTORY_DIR):
-                fpath = os.path.join(HISTORY_DIR, fname)
-                if os.path.isfile(fpath):
-                    try:
-                        os.remove(fpath)
-                    except:
-                        pass
+        # 非追加模式：仅将当前会话分析列表重置为该文件，不删除磁盘上的历史物理文件
+        st.session_state.analyzed_files = [uploaded_file.name]
 
 with st.sidebar:
     if append_mode:
@@ -1403,14 +1508,17 @@ with st.sidebar:
         if not st.session_state.analyzed_files:
             st.info(t("history_no_docs"))
         else:
+            cur_papers_dir = get_current_papers_dir()
             for fname in st.session_state.analyzed_files:
-                fpath = os.path.join(HISTORY_DIR, fname)
+                fpath = os.path.join(cur_papers_dir, fname)
+                if not os.path.exists(fpath):
+                    fpath = os.path.join(HISTORY_DIR, fname)
                 if os.path.exists(fpath):
                     with open(fpath, "rb") as f:
-                        file_bytes = f.read()
+                        f_bytes = f.read()
                     st.download_button(
                         label=f"📄 {fname}",
-                        data=file_bytes,
+                        data=f_bytes,
                         file_name=fname,
                         mime="application/pdf",
                         key=f"history_{fname}",
@@ -1462,6 +1570,18 @@ with right_col:
     st.markdown("---")
     st.subheader(t("memory_mgr_title"))
 
+    # 🏷️ 项目课题自由命名输入框（作为存储属性值，不直接用作文件名或物理目录）
+    curr_proj_name = get_current_project_name()
+    new_proj_name_input = st.text_input(
+        t("project_name_label"),
+        value=curr_proj_name,
+        key="project_name_input_widget",
+        help=t("project_name_help")
+    )
+    if new_proj_name_input and new_proj_name_input.strip() != curr_proj_name:
+        st.session_state.current_project_name = new_proj_name_input.strip()
+        save_local_vault()
+
     col_btn1, col_btn2 = st.columns(2)
 
     with col_btn1:
@@ -1483,15 +1603,9 @@ with right_col:
                 st.session_state.master_relations = []
                 st.session_state.analyzed_files = []
                 st.session_state.html_data = ""
-
-                if os.path.exists(HISTORY_DIR):
-                    for fname in os.listdir(HISTORY_DIR):
-                        fpath = os.path.join(HISTORY_DIR, fname)
-                        if os.path.isfile(fpath):
-                            try:
-                                os.remove(fpath)
-                            except:
-                                pass
+                # 生成全新项目 ID 与项目默认显示名，历史工程在本地目录完整安全隔离保留
+                st.session_state.current_project_id = generate_project_id()
+                st.session_state.current_project_name = datetime.now().strftime("课题_%Y%m%d_%H%M%S")
 
                 clear_local_vault()
                 st.session_state.project_loaded_success = False
@@ -1517,9 +1631,35 @@ with right_col:
             loaded_data = json.load(uploaded_project)
 
             if st.button(t("btn_confirm_load"), type="primary", use_container_width=True):
+                # 从记忆库内容中提取存储的值（project_id 与 project_name），绝不依赖外部文件名
+                stored_pid = loaded_data.get("project_id", "")
+                file_stem = os.path.splitext(uploaded_project.name)[0]
+                stored_pname = loaded_data.get("project_name", file_stem)
+
+                # 智能匹配已有工程目录或生成稳定新目录
+                matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
+                st.session_state.current_project_id = matched_pid
+                st.session_state.current_project_name = stored_pname
+
                 st.session_state.master_entities = loaded_data.get("entities", [])
                 st.session_state.master_relations = loaded_data.get("relations", [])
-                st.session_state.analyzed_files = loaded_data.get("analyzed_files", [])
+                loaded_files = loaded_data.get("analyzed_files", [])
+
+                # 文件夹对齐与老文献挂载/合并
+                target_papers_dir = get_project_papers_dir_by_id(matched_pid)
+                for fname in loaded_files:
+                    target_file_path = os.path.join(target_papers_dir, fname)
+                    if not os.path.exists(target_file_path):
+                        legacy_path = os.path.join(HISTORY_DIR, fname)
+                        if os.path.exists(legacy_path):
+                            try:
+                                shutil.copy2(legacy_path, target_file_path)
+                            except Exception:
+                                pass
+
+                existing_in_target = [f for f in os.listdir(target_papers_dir) if os.path.isfile(os.path.join(target_papers_dir, f))] if os.path.exists(target_papers_dir) else []
+                merged_files = list(dict.fromkeys(loaded_files + existing_in_target))
+                st.session_state.analyzed_files = merged_files
 
                 from back_logic import GraphVisualizer
 
@@ -1547,6 +1687,127 @@ with right_col:
                 st.rerun()
         except Exception as e:
             st.error(t("err_load_project").format(e=e))
+
+    # ==========================================
+    # 🗄️ 磁盘治理与工程归档管理区 (位于记忆库管理工具正下方)
+    # ==========================================
+    st.markdown("---")
+    st.markdown(f"##### {t('archive_mgr_title')}")
+
+    # 1. 清理当前工程孤儿文献 (Orphaned Files Cleanup)
+    cur_papers_dir = get_current_papers_dir()
+    all_cur_files = [f for f in os.listdir(cur_papers_dir) if os.path.isfile(os.path.join(cur_papers_dir, f))] if os.path.exists(cur_papers_dir) else []
+
+    referenced_sources = set()
+    for ent in st.session_state.get("master_entities", []):
+        ds = ent.get("doc_source", "")
+        if ds:
+            referenced_sources.add(str(ds).strip())
+    for rel in st.session_state.get("master_relations", []):
+        ds = rel.get("doc_source", "")
+        if ds:
+            referenced_sources.add(str(ds).strip())
+
+    def is_file_referenced(fname):
+        for ref in referenced_sources:
+            if fname in ref or ref in fname:
+                return True
+        return False
+
+    orphan_files = [f for f in all_cur_files if not is_file_referenced(f)]
+
+    col_clean_btn, col_clean_info = st.columns([3, 2])
+    with col_clean_btn:
+        if st.button(t("btn_clean_orphans"), use_container_width=True, help=t("help_clean_orphans")):
+            if orphan_files:
+                deleted_cnt = 0
+                for of in orphan_files:
+                    try:
+                        f_del_path = os.path.join(cur_papers_dir, of)
+                        if os.path.exists(f_del_path):
+                            os.remove(f_del_path)
+                        deleted_cnt += 1
+                        if of in st.session_state.analyzed_files:
+                            st.session_state.analyzed_files.remove(of)
+                    except Exception:
+                        pass
+                save_local_vault()
+                st.toast(t("toast_orphans_cleaned").format(count=deleted_cnt), icon="🧹")
+                st.rerun()
+            else:
+                st.toast(t("toast_no_orphans"), icon="✨")
+    with col_clean_info:
+        if orphan_files:
+            st.caption(t("orphan_found_count").format(count=len(orphan_files)))
+        else:
+            st.caption(t("orphan_none"))
+
+    # 2. 本地历史工程库管理 (Manage & Delete Inactive Projects)
+    with st.expander(t("manage_projects_expander"), expanded=False):
+        if os.path.exists(PROJECTS_ROOT_DIR):
+            all_projects = [d for d in os.listdir(PROJECTS_ROOT_DIR) if os.path.isdir(os.path.join(PROJECTS_ROOT_DIR, d))]
+        else:
+            all_projects = []
+
+        if not all_projects:
+            st.info(t("no_saved_projects"))
+        else:
+            cur_pid = get_current_project_id()
+            for proj_id in sorted(all_projects):
+                p_path = os.path.join(PROJECTS_ROOT_DIR, proj_id)
+                p_papers_dir = os.path.join(p_path, "papers")
+                p_papers = [f for f in os.listdir(p_papers_dir) if os.path.isfile(os.path.join(p_papers_dir, f))] if os.path.exists(p_papers_dir) else []
+
+                # 读取存储的课题显示名称（存储值）
+                p_display_name = proj_id
+                pkg_file = os.path.join(p_path, "project.biokg")
+                if os.path.exists(pkg_file):
+                    try:
+                        with open(pkg_file, "r", encoding="utf-8") as f:
+                            p_meta = json.load(f)
+                        p_display_name = p_meta.get("project_name", proj_id)
+                    except Exception:
+                        pass
+
+                total_size = 0
+                for dirpath, _, filenames in os.walk(p_path):
+                    for f in filenames:
+                        fp = os.path.join(dirpath, f)
+                        if os.path.exists(fp):
+                            try:
+                                total_size += os.path.getsize(fp)
+                            except Exception:
+                                pass
+                size_mb = total_size / (1024 * 1024)
+
+                is_active = (proj_id == cur_pid)
+                col_pname, col_pdel = st.columns([4, 1])
+                with col_pname:
+                    active_badge = f" `[{t('badge_current')}]`" if is_active else ""
+                    st.markdown(f"**📁 {p_display_name}**{active_badge}<br><small style='color:gray;'>ID: <code>{proj_id}</code> | {len(p_papers)} {t('unit_papers')} | {size_mb:.2f} MB</small>", unsafe_allow_html=True)
+                with col_pdel:
+                    if not is_active:
+                        if st.button("🗑️", key=f"del_proj_{proj_id}", help=t("btn_del_proj_help").format(name=p_display_name)):
+                            st.session_state[f"confirm_del_proj_{proj_id}"] = True
+                    else:
+                        st.write("")
+
+                if st.session_state.get(f"confirm_del_proj_{proj_id}", False):
+                    st.warning(t("warn_del_proj_confirm").format(name=p_display_name))
+                    col_del_yes, col_del_no = st.columns(2)
+                    with col_del_yes:
+                        if st.button(t("btn_confirm_del"), key=f"btn_del_yes_{proj_id}", use_container_width=True):
+                            try:
+                                shutil.rmtree(p_path)
+                                st.toast(t("toast_proj_deleted").format(name=p_display_name), icon="🗑️")
+                                st.session_state[f"confirm_del_proj_{proj_id}"] = False
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"删除失败: {e}")
+                    with col_del_no:
+                        if st.button(t("btn_cancel"), key=f"btn_del_no_{proj_id}", use_container_width=True):
+                            st.session_state[f"confirm_del_proj_{proj_id}"] = False
+                            st.rerun()
 
 # ==========================================
 # 核心引擎触发与结果渲染区（全览画布排版）
@@ -1607,52 +1868,53 @@ if uploaded_file and start_button:
                     if alignment_map:
                         st.success(t("msg_found_synonyms").format(count=len(alignment_map)))
 
-                        # ====================================================
-                        # 2. 遍历新实体，执行融合手术 (双重拦截：精确匹配 + 语义对齐)
-                        # ====================================================
-                        aligned_new_entities = []
-                        master_names = {ent["standard_name"]: ent for ent in st.session_state.master_entities}
+                    # ====================================================
+                    # 2. 遍历新实体，执行融合手术 (双重拦截：精确匹配 + 语义对齐)
+                    # ====================================================
+                    aligned_new_entities = []
+                    master_names = {ent["standard_name"]: ent for ent in st.session_state.master_entities}
 
-                        for new_ent in new_entities:
-                            new_name = new_ent.get("standard_name")
-                            new_source = new_ent.get("doc_source", "")
+                    for new_ent in new_entities:
+                        new_name = new_ent.get("standard_name")
+                        new_source = new_ent.get("doc_source", "")
 
-                            # 🛡️ 拦截网 1：如果名字一模一样（代码级精准匹配）
-                            if new_name in master_names:
-                                master_ent = master_names[new_name]
+                        # 🛡️ 拦截网 1：如果名字一模一样（代码级精准匹配）
+                        if new_name in master_names:
+                            master_ent = master_names[new_name]
+                            aliases = master_ent.setdefault("aliases", [])
+                            for new_alias in new_ent.get("aliases", []):
+                                if new_alias not in aliases and new_alias != new_name:
+                                    aliases.append(new_alias)
+                            old_source = master_ent.get("doc_source", "")
+                            if new_source and new_source not in old_source:
+                                master_ent["doc_source"] = f"{old_source} | {new_source}"
+
+                        # 🛡️ 拦截网 2：名字不一样，但大模型裁判认为它们是同一个东西
+                        elif alignment_map and new_name in alignment_map:
+                            master_name = alignment_map[new_name]
+                            if master_name in master_names:
+                                master_ent = master_names[master_name]
                                 aliases = master_ent.setdefault("aliases", [])
+                                if new_name not in aliases:
+                                    aliases.append(new_name)
                                 for new_alias in new_ent.get("aliases", []):
-                                    if new_alias not in aliases and new_alias != new_name:
+                                    if new_alias not in aliases and new_alias != master_name:
                                         aliases.append(new_alias)
                                 old_source = master_ent.get("doc_source", "")
                                 if new_source and new_source not in old_source:
                                     master_ent["doc_source"] = f"{old_source} | {new_source}"
-
-                            # 🛡️ 拦截网 2：名字不一样，但大模型裁判认为它们是同一个东西
-                            elif new_name in alignment_map:
-                                master_name = alignment_map[new_name]
-                                if master_name in master_names:
-                                    master_ent = master_names[master_name]
-                                    aliases = master_ent.setdefault("aliases", [])
-                                    if new_name not in aliases:
-                                        aliases.append(new_name)
-                                    for new_alias in new_ent.get("aliases", []):
-                                        if new_alias not in aliases and new_alias != master_name:
-                                            aliases.append(new_alias)
-                                    old_source = master_ent.get("doc_source", "")
-                                    if new_source and new_source not in old_source:
-                                        master_ent["doc_source"] = f"{old_source} | {new_source}"
-                                else:
-                                    aligned_new_entities.append(new_ent)
                             else:
                                 aligned_new_entities.append(new_ent)
+                        else:
+                            aligned_new_entities.append(new_ent)
 
                     # 3. 移花接木：将新文献抽出的【关系网】强行接入全局标准节点
-                    for rel in new_relations:
-                        if rel.get("source") in alignment_map:
-                            rel["source"] = alignment_map[rel["source"]]
-                        if rel.get("target") in alignment_map:
-                            rel["target"] = alignment_map[rel["target"]]
+                    if alignment_map:
+                        for rel in new_relations:
+                            if rel.get("source") in alignment_map:
+                                rel["source"] = alignment_map[rel["source"]]
+                            if rel.get("target") in alignment_map:
+                                rel["target"] = alignment_map[rel["target"]]
 
                     # ====================================================
                     # 4. 🔗 核心大招：关系去重与证据融合 (同类合并，异类保留)
@@ -1812,19 +2074,24 @@ if st.session_state.show_results and st.session_state.html_data:
     # ====================================================================
     if len(st.session_state.master_entities) > 0:
         with export_placeholder:
+            current_pid = get_current_project_id()
+            current_pname = get_current_project_name()
+            clean_export_name = re.sub(r'[\\/*?:"<>|]', "_", str(current_pname).strip()).strip(". ") or "project"
+            export_filename = f"{clean_export_name}.biokg"
             project_data = {
                 "version": "1.0",
+                "project_id": current_pid,
+                "project_name": current_pname,
                 "entities": st.session_state.master_entities,
                 "relations": st.session_state.master_relations,
                 "analyzed_files": st.session_state.analyzed_files
             }
-            json_bytes = json.dumps(project_data, ensure_ascii=False).encode('utf-8')
+            json_bytes = json.dumps(project_data, ensure_ascii=False, indent=2).encode('utf-8')
 
             st.download_button(
-                # 注意这里我们复用了之前侧边栏已经定义好的 btn_export_project 翻译
                 label=t("btn_export_project"),
                 data=json_bytes,
-                file_name=t("default_biokg_filename"),
+                file_name=export_filename,
                 mime="application/json",
                 use_container_width=True,
                 key="real_export_btn"

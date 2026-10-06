@@ -43,9 +43,20 @@ class BioGraphPipeline:
                 self.global_entities.append(new_ent)
 
     def _merge_relations(self, new_relations):
-        """将新抽取的连线关系，合并到全局关系库中（防止完全重复的边）"""
+        """将新抽取的连线关系，合并到全局关系库中（防止完全重复的边，且强校验两端节点合法性）"""
         if not new_relations:
             return
+
+        # 收集全局已登记的所有合法实体名（含别名）映射
+        std_map = {}
+        for e in self.global_entities:
+            s_name = str(e.get("standard_name", "")).strip()
+            if s_name:
+                std_map[s_name.lower()] = s_name
+                for a in e.get("aliases", []):
+                    if a:
+                        std_map[str(a).strip().lower()] = s_name
+
         for new_rel in new_relations:
             if not isinstance(new_rel, dict):
                 continue
@@ -54,10 +65,28 @@ class BioGraphPipeline:
             r = new_rel.get("relation")
             if not s or not t:
                 continue
+
+            s_clean = str(s).strip()
+            t_clean = str(t).strip()
+            s_std = std_map.get(s_clean.lower())
+            t_std = std_map.get(t_clean.lower())
+
+            # 🛡️ 校验两端节点：若出现不在已登记实体库中、或命中动作词的假节点，坚决拦截
+            if not s_std or not t_std or BioBrainAgent._is_action_name(s_std) or BioBrainAgent._is_action_name(t_std):
+                print(f"   ⚠️ [关系防线] 拦截非法关系（端点未在实体字典中登记或属于动作伪节点）: '{s}' -> '{t}'")
+                continue
+
+            # 规范化端点为全局标准名
+            new_rel["source"] = s_std
+            new_rel["target"] = t_std
+
+            if s_std == t_std:
+                continue
+
             # 判断这条边是否已经存在（根据起点、终点和关系类型）
             duplicate = any(
-                item.get("source") == s and
-                item.get("target") == t and
+                item.get("source") == s_std and
+                item.get("target") == t_std and
                 item.get("relation") == r
                 for item in self.global_relations
             )
@@ -194,139 +223,92 @@ class BioGraphPipeline:
         if not chunks:
             return self.global_entities, self.global_relations
 
-        # 单块情况（例如仅有1张机制图、或纯摘要模式）：采用极简单流处理
-        if total_chunks == 1:
-            chunk = chunks[0]
-            c_source = chunk_sources[0]
-            msg1 = f"🧠 [Single Chunk] [Step 1/2] Deeply extracting entities..." if is_en else f"🧠 [单一切块] [Step 1/2] 正在深度提取实体..."
-            report_progress(0.25, 1.0, msg1)
-            chunk_entities = self.agent.extract_entities_with_reflection(chunk, use_reflection=use_reflection, entity_lang=entity_lang)
-            for ent in chunk_entities:
-                if isinstance(ent, dict):
-                    ent["doc_source"] = c_source
-            self._merge_entities(chunk_entities)
-
-            msg2 = f"🔗 [Single Chunk] [Step 2/2] Deducing network relations..." if is_en else f"🔗 [单一切块] [Step 2/2] 正在推演实体间的网络调控关系..."
-            report_progress(0.65, 1.0, msg2)
-            chunk_relations = self.agent.extract_relations(chunk, self.global_entities)
-            default_reason = "No detailed explanation" if is_en else "无详细解释"
-            source_prefix = "Source" if is_en else "源自"
-            source_tag = c_source if c_source != source_name else current_source
-            for rel in chunk_relations:
-                if isinstance(rel, dict):
-                    rel["doc_source"] = c_source
-                    original_reason = rel.get("reason", default_reason)
-                    rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
-            self._merge_relations(chunk_relations)
-
-            print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")
-            msg_done = f"✨ Analysis complete! Caught {len(self.global_entities)} entities, {len(self.global_relations)} relations." if is_en else f"✨ 分析完毕！本轮共捕获 {len(self.global_entities)} 个实体，{len(self.global_relations)} 条关系。"
-            report_progress(1.0, 1.0, msg_done)
-            return self.global_entities, self.global_relations
-
-        # -------------------------------------------------------------
-        # 🚀 多块情况：启动两阶段多线程并发提取流水线
-        # -------------------------------------------------------------
+        # =============================================================
+        # 🚀 切块级局部高纯度闭环提取流水线 (Chunk-Centric Localized Pipeline)
+        # 彻底解决两阶段全局大字典污染导致的幻觉激增问题！
+        # 每个切块独立提取本地实体，并严格仅基于本地实体推演该切块的关系
+        # =============================================================
+        default_reason = "No detailed explanation" if is_en else "无详细解释"
+        source_prefix = "Source" if is_en else "源自"
         worker_count = max(1, min(int(concurrency), total_chunks))
-        print(f"🚀 [Pipeline 并发引擎] 启动两阶段多线程并发提取: 切块总数={total_chunks}, 并发线程数={worker_count}")
 
-        # =============================================================
-        # 阶段 1：并行实体提取 (Phase 1: Parallel Entity Extraction)
-        # =============================================================
-        raw_chunk_entities = [[] for _ in range(total_chunks)]
-
-        def _worker_entity(idx, chunk_text):
+        def _process_single_chunk(idx, chunk_text, c_source):
+            """单个切块的自给自足闭环处理函数"""
             try:
+                # 1. 块内精准实体提取与反思
                 ents = self.agent.extract_entities_with_reflection(
                     chunk_text, use_reflection=use_reflection, entity_lang=entity_lang
                 )
-                return idx, ents, None
+                if not isinstance(ents, list):
+                    ents = []
+
+                for ent in ents:
+                    if isinstance(ent, dict):
+                        ent["doc_source"] = c_source
+
+                # 2. 紧扣当前切块本地实体的闭环关系抽取 (绝无跨切块全局无关大字典污染！)
+                rels = []
+                if ents:
+                    rels = self.agent.extract_relations(chunk_text, ents)
+                    if not isinstance(rels, list):
+                        rels = []
+
+                    source_tag = c_source if c_source != source_name else current_source
+                    for rel in rels:
+                        if isinstance(rel, dict):
+                            rel["doc_source"] = c_source
+                            original_reason = rel.get("reason", default_reason)
+                            rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
+
+                return idx, ents, rels, None
             except Exception as exc:
-                return idx, [], exc
+                return idx, [], [], exc
 
-        completed_entities = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(_worker_entity, i, chunk): i
-                for i, chunk in enumerate(chunks)
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                idx, ents, err = fut.result()
-                if err:
-                    print(f"⚠️ [Chunk {idx + 1}] 实体提取遇到异常 (已跳过): {err}")
-                raw_chunk_entities[idx] = ents if ents else []
-                completed_entities += 1
+        raw_chunk_results = [([], []) for _ in range(total_chunks)]
 
-                # 主线程安全更新进度：0.15 -> 0.52
-                progress = 0.15 + 0.37 * (completed_entities / total_chunks)
+        if total_chunks == 1 or worker_count == 1:
+            # 单块或串行模式：直观顺畅推进
+            for idx in range(total_chunks):
+                chunk = chunks[idx]
+                c_source = chunk_sources[idx]
                 msg = (
-                    f"🧠 [Entities {completed_entities}/{total_chunks}] Chunk {idx + 1} extracted..."
+                    f"🧠 [Chunk {idx + 1}/{total_chunks}] Extracting local entities & relations..."
                     if is_en else
-                    f"🧠 [实体并发抽取 {completed_entities}/{total_chunks}] 文本块 {idx + 1} 提取完成..."
+                    f"🧠 [文本切块 {idx + 1}/{total_chunks}] 正在闭环推演局部实体与调控关系..."
                 )
-                report_progress(progress, 1.0, msg)
+                report_progress(0.2 + 0.7 * (idx / total_chunks), 1.0, msg)
+                _, ents, rels, err = _process_single_chunk(idx, chunk, c_source)
+                if err:
+                    print(f"⚠️ [Chunk {idx + 1}] 处理遇到异常 (已跳过): {err}")
+                raw_chunk_results[idx] = (ents, rels)
+        else:
+            # 多切块并发模式：每个 Worker 独立走完本地切块的实体+关系闭环，无两阶段屏障阻塞！
+            print(f"🚀 [Pipeline 并发引擎] 启动切块局部闭环并发流水线: 切块总数={total_chunks}, 并发线程数={worker_count}")
+            completed_chunks = 0
+            with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = {
+                    executor.submit(_process_single_chunk, i, chunks[i], chunk_sources[i]): i
+                    for i in range(total_chunks)
+                }
+                for fut in concurrent.futures.as_completed(futures):
+                    idx, ents, rels, err = fut.result()
+                    if err:
+                        print(f"⚠️ [Chunk {idx + 1}] 并发处理遇到异常 (已跳过): {err}")
+                    raw_chunk_results[idx] = (ents, rels)
+                    completed_chunks += 1
 
-        # 阶段 1 汇总：主线程安全合并至全局实体库
-        for idx, ents in enumerate(raw_chunk_entities):
-            c_source = chunk_sources[idx]
-            for ent in ents:
-                if isinstance(ent, dict):
-                    ent["doc_source"] = c_source
+                    progress = 0.15 + 0.80 * (completed_chunks / total_chunks)
+                    msg = (
+                        f"⚡ [Progress {completed_chunks}/{total_chunks}] Chunk {idx + 1} analyzed..."
+                        if is_en else
+                        f"⚡ [并发进度 {completed_chunks}/{total_chunks}] 切块 {idx + 1} 分析完成..."
+                    )
+                    report_progress(progress, 1.0, msg)
+
+        # 汇总阶段：主线程统一安全归并至全局实体库与关系库
+        for idx in range(total_chunks):
+            ents, rels = raw_chunk_results[idx]
             self._merge_entities(ents)
-
-        msg_entities_done = (
-            f"🧬 Merged {len(self.global_entities)} standard entities. Starting relation deductions..."
-            if is_en else
-            f"🧬 全局实体合并完成 (共 {len(self.global_entities)} 个标准实体)，即将推演关系网..."
-        )
-        report_progress(0.55, 1.0, msg_entities_done)
-
-        # =============================================================
-        # 阶段 2：共享完整实体字典的全量并行关系推演 (Phase 2: Parallel Relation Extraction)
-        # =============================================================
-        snapshot_entities = list(self.global_entities)
-        raw_chunk_relations = [[] for _ in range(total_chunks)]
-
-        def _worker_relation(idx, chunk_text):
-            try:
-                rels = self.agent.extract_relations(chunk_text, snapshot_entities)
-                return idx, rels, None
-            except Exception as exc:
-                return idx, [], exc
-
-        completed_relations = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=worker_count) as executor:
-            futures = {
-                executor.submit(_worker_relation, i, chunk): i
-                for i, chunk in enumerate(chunks)
-            }
-            for fut in concurrent.futures.as_completed(futures):
-                idx, rels, err = fut.result()
-                if err:
-                    print(f"⚠️ [Chunk {idx + 1}] 关系推演遇到异常 (已跳过): {err}")
-                raw_chunk_relations[idx] = rels if rels else []
-                completed_relations += 1
-
-                # 主线程安全更新进度：0.55 -> 0.95
-                progress = 0.55 + 0.40 * (completed_relations / total_chunks)
-                msg = (
-                    f"🔗 [Relations {completed_relations}/{total_chunks}] Chunk {idx + 1} deduced..."
-                    if is_en else
-                    f"🔗 [关系并发推演 {completed_relations}/{total_chunks}] 文本块 {idx + 1} 推演完成..."
-                )
-                report_progress(progress, 1.0, msg)
-
-        # 阶段 2 汇总：主线程格式化 Hover 详情并合并关系
-        default_reason = "No detailed explanation" if is_en else "无详细解释"
-        source_prefix = "Source" if is_en else "源自"
-        for idx, rels in enumerate(raw_chunk_relations):
-            c_source = chunk_sources[idx]
-            source_tag = c_source if c_source != source_name else current_source
-            for rel in rels:
-                if isinstance(rel, dict):
-                    rel["doc_source"] = c_source
-                    original_reason = rel.get("reason", default_reason)
-                    rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
             self._merge_relations(rels)
 
         print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")

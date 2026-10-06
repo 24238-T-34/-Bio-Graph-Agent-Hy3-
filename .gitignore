@@ -38,4 +38,8 @@ lib/
 .agents/
 .bio_graph_config.json
 .current_project.biokg
-start_wsl.bat
+start_wsl.bat
+
+# 项目工程本地归档库与记忆库文件
+projects/
+*.biokg
