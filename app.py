@@ -470,45 +470,99 @@ def save_local_vault():
     """将当前记忆库（实体、关系、历史文献、工程 ID 与名称）原地覆写保存到活动缓存及专属归档"""
     proj_id = get_current_project_id()
     proj_name = get_current_project_name()
-    if "master_entities" in st.session_state and st.session_state.master_entities:
-        data = {
-            "version": "1.0",
-            "project_id": proj_id,
-            "project_name": proj_name,
-            "entities": st.session_state.master_entities,
-            "relations": st.session_state.get("master_relations", []),
-            "analyzed_files": st.session_state.get("analyzed_files", [])
-        }
-        # 1. 保存到根目录临时缓存，保障刷新页面状态持久化
-        try:
-            with open(LOCAL_VAULT_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"本地记忆库自动写入失败: {e}")
+    data = {
+        "version": "1.0",
+        "project_id": proj_id,
+        "project_name": proj_name,
+        "entities": st.session_state.get("master_entities", []),
+        "relations": st.session_state.get("master_relations", []),
+        "analyzed_files": st.session_state.get("analyzed_files", [])
+    }
+    # 1. 保存到根目录临时缓存，保障刷新页面状态持久化
+    try:
+        with open(LOCAL_VAULT_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"本地记忆库自动写入失败: {e}")
 
-        # 2. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg
-        try:
-            proj_dir = get_project_dir_by_id(proj_id)
-            proj_biokg = os.path.join(proj_dir, "project.biokg")
-            with open(proj_biokg, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception as e:
-            print(f"工程专属记忆库写入失败: {e}")
+    # 2. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg
+    try:
+        proj_dir = get_project_dir_by_id(proj_id)
+        proj_biokg = os.path.join(proj_dir, "project.biokg")
+        with open(proj_biokg, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"工程专属记忆库写入失败: {e}")
+
+
+def switch_to_project(proj_id: str) -> bool:
+    """切换当前活动工程至指定的历史工程"""
+    proj_dir = get_project_dir_by_id(proj_id)
+    pkg_file = os.path.join(proj_dir, "project.biokg")
+    if not os.path.exists(pkg_file):
+        return False
+    try:
+        with open(pkg_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        pname = data.get("project_name", proj_id)
+        st.session_state.current_project_id = proj_id
+        st.session_state.current_project_name = pname
+        st.session_state["project_name_input_widget"] = pname
+        st.session_state.master_entities = data.get("entities", [])
+        st.session_state.master_relations = data.get("relations", [])
+        loaded_files = data.get("analyzed_files", [])
+
+        # 检查专属 papers 目录中已有文献并补充
+        papers_dir = os.path.join(proj_dir, "papers")
+        existing_in_target = [f for f in os.listdir(papers_dir) if os.path.isfile(os.path.join(papers_dir, f))] if os.path.exists(papers_dir) else []
+        st.session_state.analyzed_files = list(dict.fromkeys(loaded_files + existing_in_target))
+
+        if st.session_state.master_entities:
+            from back_logic import GraphVisualizer
+            visualizer = GraphVisualizer()
+            html_file = ".bio_knowledge_graph.html"
+            if os.path.exists(html_file):
+                os.remove(html_file)
+            visualizer.generate_html(
+                st.session_state.master_entities,
+                st.session_state.master_relations,
+                output_file=html_file,
+                output_lang=st.session_state.get("ui_language", "zh")
+            )
+            if os.path.exists(html_file):
+                with open(html_file, "r", encoding="utf-8") as f:
+                    st.session_state.html_data = f.read()
+            st.session_state.show_results = True
+        else:
+            st.session_state.show_results = False
+            st.session_state.html_data = ""
+
+        # 原地覆写根缓存 .current_project.biokg，确保刷新依然保持在该工程
+        save_local_vault()
+        return True
+    except Exception as e:
+        print(f"切换工程失败: {e}")
+        return False
 
 
 def load_local_vault():
-    """应用启动或页面刷新时，若内存为空且本地记忆库存在，则自动载入以恢复图谱与工作区"""
-    if not st.session_state.get("master_entities") and os.path.exists(LOCAL_VAULT_FILE):
+    """应用启动或页面刷新时，若本地记忆库存在，则自动载入以恢复图谱与工作区元数据"""
+    if os.path.exists(LOCAL_VAULT_FILE):
         try:
             with open(LOCAL_VAULT_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            # 无论实体是否为空，优先恢复持久化的工程 ID 与课题名称，防止意外生成新工程
+            st.session_state.current_project_id = data.get("project_id", get_current_project_id())
+            pname = data.get("project_name", "默认课题")
+            st.session_state.current_project_name = pname
+            if "project_name_input_widget" not in st.session_state:
+                st.session_state["project_name_input_widget"] = pname
+
             entities = data.get("entities", [])
-            if entities:
+            if entities and not st.session_state.get("master_entities"):
                 st.session_state.master_entities = entities
                 st.session_state.master_relations = data.get("relations", [])
                 st.session_state.analyzed_files = data.get("analyzed_files", [])
-                st.session_state.current_project_id = data.get("project_id", generate_project_id())
-                st.session_state.current_project_name = data.get("project_name", "默认课题")
                 st.session_state.show_results = True
                 redraw_and_update()
         except Exception as e:
@@ -701,9 +755,11 @@ UI_TEXT = {
     "badge_current": {"zh": "当前活动", "en": "Active"},
     "unit_papers": {"zh": "篇文献", "en": "papers"},
     "btn_del_proj_help": {"zh": "彻底删除历史工程文件夹 {name}，释放磁盘空间", "en": "Delete historical project folder {name} and free disk space"},
+    "btn_switch_proj_help": {"zh": "载入并切换到历史工程【{name}】", "en": "Load and switch to project [{name}]"},
     "warn_del_proj_confirm": {"zh": "⚠️ 确认彻底删除历史工程【{name}】及其所有文献吗？此操作无法撤销。", "en": "⚠️ Confirm deleting project [{name}] and all its papers? This cannot be undone."},
     "btn_confirm_del": {"zh": "确认彻底删除", "en": "Confirm Delete"},
     "toast_proj_deleted": {"zh": "工程 {name} 已彻底删除", "en": "Project {name} permanently deleted"},
+    "toast_proj_switched": {"zh": "已切换到工程: {name}", "en": "Switched to project: {name}"},
     # 核心引擎触发区 (图谱生成、洗树、融合、渲染)
     "err_missing_api_key": {"zh": "请先在左侧输入 API Key！", "en": "Please enter API Key on the left first!"},
     "msg_parsing_pages": {"zh": "🧠 智能体正在解析第 {start} 到 {end} 页...", "en": "🧠 Agent is parsing pages {start} to {end}..."},
@@ -1046,6 +1102,10 @@ if "current_project_name" not in st.session_state:
 
 load_config()
 load_local_vault()
+
+if not st.session_state.get("current_project_id"):
+    st.session_state.current_project_id = generate_project_id()
+    save_local_vault()
 
 # append_mode = True
 # ==========================================
@@ -1589,7 +1649,9 @@ with right_col:
     )
     if new_proj_name_input and new_proj_name_input.strip() != curr_proj_name:
         st.session_state.current_project_name = new_proj_name_input.strip()
+        st.session_state["project_name_input_widget"] = new_proj_name_input.strip()
         save_local_vault()
+        st.rerun()
 
     col_btn1, col_btn2 = st.columns(2)
 
@@ -1613,10 +1675,13 @@ with right_col:
                 st.session_state.analyzed_files = []
                 st.session_state.html_data = ""
                 # 生成全新项目 ID 与项目默认显示名，历史工程在本地目录完整安全隔离保留
-                st.session_state.current_project_id = generate_project_id()
-                st.session_state.current_project_name = datetime.now().strftime("课题_%Y%m%d_%H%M%S")
+                new_pid = generate_project_id()
+                new_pname = datetime.now().strftime("课题_%Y%m%d_%H%M%S")
+                st.session_state.current_project_id = new_pid
+                st.session_state.current_project_name = new_pname
+                st.session_state["project_name_input_widget"] = new_pname
 
-                clear_local_vault()
+                save_local_vault()
                 st.session_state.project_loaded_success = False
                 st.session_state.show_new_confirm = False
                 st.rerun()
@@ -1649,6 +1714,7 @@ with right_col:
                 matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
                 st.session_state.current_project_id = matched_pid
                 st.session_state.current_project_name = stored_pname
+                st.session_state["project_name_input_widget"] = stored_pname
 
                 st.session_state.master_entities = loaded_data.get("entities", [])
                 st.session_state.master_relations = loaded_data.get("relations", [])
@@ -1790,14 +1856,21 @@ with right_col:
                 size_mb = total_size / (1024 * 1024)
 
                 is_active = (proj_id == cur_pid)
-                col_pname, col_pdel = st.columns([4, 1])
+                col_pname, col_pact = st.columns([7, 3])
                 with col_pname:
                     active_badge = f" `[{t('badge_current')}]`" if is_active else ""
                     st.markdown(f"**📁 {p_display_name}**{active_badge}<br><small style='color:gray;'>ID: <code>{proj_id}</code> | {len(p_papers)} {t('unit_papers')} | {size_mb:.2f} MB</small>", unsafe_allow_html=True)
-                with col_pdel:
+                with col_pact:
                     if not is_active:
-                        if st.button("🗑️", key=f"del_proj_{proj_id}", help=t("btn_del_proj_help").format(name=p_display_name)):
-                            st.session_state[f"confirm_del_proj_{proj_id}"] = True
+                        c_sw, c_del = st.columns(2)
+                        with c_sw:
+                            if st.button("🚀", key=f"switch_proj_{proj_id}", help=t("btn_switch_proj_help").format(name=p_display_name)):
+                                if switch_to_project(proj_id):
+                                    st.toast(t("toast_proj_switched").format(name=p_display_name), icon="🚀")
+                                    st.rerun()
+                        with c_del:
+                            if st.button("🗑️", key=f"del_proj_{proj_id}", help=t("btn_del_proj_help").format(name=p_display_name)):
+                                st.session_state[f"confirm_del_proj_{proj_id}"] = True
                     else:
                         st.write("")
 
