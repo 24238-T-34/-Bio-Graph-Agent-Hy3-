@@ -64,65 +64,6 @@ class BioGraphPipeline:
             if not duplicate:
                 self.global_relations.append(new_rel)
 
-    def _run_vision_stage(self, pdf_path, start_page, end_page, vision_strategy, vision_keyword, vision_model, source_name, current_source, entity_lang, is_en, report_progress):
-        if not vision_strategy or vision_strategy == "off":
-            return
-
-        source_prefix = "Source" if is_en else "源自"
-        print(f"👁️ [Pipeline] 启动机制图视觉分析 (策略: {vision_strategy}, 关键词: '{vision_keyword}')...")
-        msg_vision_init = (
-            f"📷 [Vision] Sniffing figures in pages {start_page + 1} to {end_page}..."
-            if is_en else
-            f"📷 [视觉解析] 正在检索第 {start_page + 1} 到 {end_page} 页的候选机制图..."
-        )
-        report_progress(0.96, 1.0, msg_vision_init)
-
-        figures = self.processor.extract_figures(
-            pdf_path,
-            start_page=start_page,
-            end_page=end_page,
-            mode=vision_strategy,
-            keyword=vision_keyword
-        )
-
-        if figures:
-            msg_fig_found = (
-                f"📷 [Vision] Found {len(figures)} candidate figure(s). Analyzing topology..."
-                if is_en else
-                f"📷 [视觉解析] 命中 {len(figures)} 张目标插图，正通过视觉模型解析拓扑网络..."
-            )
-            report_progress(0.97, 1.0, msg_fig_found)
-
-            for f_idx, fig in enumerate(figures):
-                fig_label = fig.get("label", f"Fig_{f_idx+1}")
-                fig_caption = fig.get("caption", "")
-                fig_page = fig.get("page", start_page + 1)
-
-                fig_ents, fig_rels = self.agent.extract_graph_from_figure(
-                    image_bytes=fig["image_bytes"],
-                    image_ext=fig.get("ext", "png"),
-                    caption=fig_caption,
-                    vision_model=vision_model,
-                    entity_lang=entity_lang
-                )
-
-                source_tag = f"{source_name} [Figure: {fig_label} (P.{fig_page})]"
-                for fe in fig_ents:
-                    if isinstance(fe, dict):
-                        fe["doc_source"] = source_tag
-                for fr in fig_rels:
-                    if isinstance(fr, dict):
-                        fr["doc_source"] = source_tag
-                        fr["weight"] = 1
-                        if "reason" not in fr:
-                            fr["reason"] = f"Visual Topology [{source_prefix}: {source_tag}]"
-
-                self._merge_entities(fig_ents)
-                self._merge_relations(fig_rels)
-        else:
-            if vision_strategy == "match" and vision_keyword:
-                print(f"ℹ️ [Pipeline] 未在选定页码中匹配到关键词 '{vision_keyword}' 的关联插图。")
-
     def run(self, pdf_path, start_page=0, end_page=None, is_summary_only=False,use_reflection=True,source_name="未知文献",entity_lang="关闭 (保持原文语言)",output_lang="zh",progress_callback=None,concurrency=4,vision_strategy="off",vision_keyword="",vision_model=None):
         print("🚀 [Pipeline] 启动全自动化生物知识图谱构建系统...")
 
@@ -135,6 +76,61 @@ class BioGraphPipeline:
                 progress_callback(current_step, total_steps, msg)
 
         is_en = "en" in output_lang.lower()
+
+        # ---------------------------------------------------------
+        # 📷 前置视觉转译流水线 (Upfront Vision Transcription)
+        # ---------------------------------------------------------
+        vision_chunks = []
+        vision_chunk_sources = []
+        if vision_strategy and vision_strategy != "off":
+            print(f"👁️ [Pipeline] 启动机制图前置视觉转译 (策略: {vision_strategy}, 关键词: '{vision_keyword}')...")
+            msg_vision_init = (
+                f"📷 [Vision] Sniffing figures in pages {start_page + 1} to {end_page}..."
+                if is_en else
+                f"📷 [视觉解析] 正在检索第 {start_page + 1} 到 {end_page} 页的候选机制图..."
+            )
+            report_progress(0.02, 1.0, msg_vision_init)
+
+            figures = self.processor.extract_figures(
+                pdf_path,
+                start_page=start_page,
+                end_page=end_page,
+                mode=vision_strategy,
+                keyword=vision_keyword
+            )
+
+            if figures:
+                msg_fig_found = (
+                    f"📷 [Vision] Found {len(figures)} candidate figure(s). Transcribing mechanism text..."
+                    if is_en else
+                    f"📷 [视觉解析] 命中 {len(figures)} 张目标插图，正在调用视觉模型转译为学术机制文本..."
+                )
+                report_progress(0.05, 1.0, msg_fig_found)
+
+                for f_idx, fig in enumerate(figures):
+                    fig_label = fig.get("label", f"Fig_{f_idx+1}")
+                    fig_caption = fig.get("caption", "")
+                    fig_page = fig.get("page", start_page + 1)
+
+                    text_transcription = self.agent.transcribe_figure_to_text(
+                        image_bytes=fig["image_bytes"],
+                        image_ext=fig.get("ext", "png"),
+                        caption=fig_caption,
+                        vision_model=vision_model,
+                        output_lang=output_lang
+                    )
+                    if text_transcription and text_transcription.strip():
+                        # 组装为带学术元数据的机制文本 Chunk，融入后续两阶段实体与关系抽取流
+                        v_chunk = (
+                            f"【文献机制通路图解析 / Visual Figure: {fig_label} (P.{fig_page})】\n"
+                            f"图注说明: {fig_caption}\n"
+                            f"分子调控机制与级联拓扑:\n{text_transcription}"
+                        )
+                        vision_chunks.append(v_chunk)
+                        vision_chunk_sources.append(f"{source_name} [Figure: {fig_label} (P.{fig_page})]")
+            else:
+                if vision_strategy == "match" and vision_keyword:
+                    print(f"ℹ️ [Pipeline] 未在选定页码中匹配到关键词 '{vision_keyword}' 的关联插图。")
 
         # ---------------------------------------------------------
         # 🚀 模式一：仅摘要模式 (混合双打流)
@@ -155,7 +151,7 @@ class BioGraphPipeline:
             if abstract_text:
                 print(f"🔍 正则成功捕获疑似摘要 (长度: {len(abstract_text)})，请求大模型质检...")
                 msg_verify = "🔍 [Verifying] Regex caught potential abstract, requesting LLM content check..." if is_en else "🔍 [质检中] 正则捕获疑似摘要，请求大模型进行内容质检..."
-                report_progress(0.3, 1.0, msg_verify)
+                report_progress(0.12, 1.0, msg_verify)
                 verified = self.agent.verify_and_clean_abstract(abstract_text)
                 if "[NOT_ABSTRACT]" not in verified:
                     final_text = verified
@@ -167,61 +163,61 @@ class BioGraphPipeline:
             if not final_text:
                 print("⚠️ 启动大模型全量兜底搜索 (范围仅限选定页码)...")
                 msg_fallback = "⚠️ [Fallback] Starting full LLM search for abstract block..." if is_en else "⚠️ [兜底搜索] 启动大模型全量兜底寻找摘要区块..."
-                report_progress(0.5, 1.0, msg_fallback)
+                report_progress(0.14, 1.0, msg_fallback)
                 fallback_result = self.agent.fallback_extract_abstract(raw_text)
                 if "[NOT_ABSTRACT]" not in fallback_result:
                     final_text = fallback_result
                     print("✅ 兜底成功，大模型已捕获摘要！")
                 else:
-                    # 如果这几页里真没摘要，就直接中断并报错给前端
-                    raise Exception("❌ 无法在指定页码中找到摘要内容，请尝试扩大页码范围，或关闭摘要模式。")
+                    # 如果这几页里真没摘要，检查是否有视觉块
+                    if not vision_chunks:
+                        raise Exception("❌ 无法在指定页码中找到摘要内容，请尝试扩大页码范围，或关闭摘要模式。")
+                    else:
+                        print("⚠️ 未找到纯文本摘要，但捕获了机制图转译文本，将以机制图为主进行构建。")
 
-            # 摘要模式下，处理块就只有这精炼的 1 个块
-            chunks = [final_text]
+            text_chunks = [final_text] if final_text else []
 
         # ---------------------------------------------------------
         # 🐢 模式二：全文解析模式 (传统的暴力分块)
         # ---------------------------------------------------------
         else:
             print(f"🐢 开启普通全文分块模式 (第 {start_page + 1} 到 {end_page} 页)...")
-            chunks = self.processor.extract_chunks(pdf_path, start_page, end_page)
+            text_chunks = self.processor.extract_chunks(pdf_path, start_page, end_page)
 
         # =========================================================
-        # 准备变量，开始让 Agent 提取实体和关系
+        # 融合视觉块与文本块，构建统一分析输入流
         # =========================================================
+        chunks = vision_chunks + text_chunks
+        chunk_sources = vision_chunk_sources + [source_name] * len(text_chunks)
         total_chunks = len(chunks)
 
         if not chunks:
             return self.global_entities, self.global_relations
 
-        # 单块情况（例如摘要模式或单页单块）：采用极简单流处理
+        # 单块情况（例如仅有1张机制图、或纯摘要模式）：采用极简单流处理
         if total_chunks == 1:
             chunk = chunks[0]
+            c_source = chunk_sources[0]
             msg1 = f"🧠 [Single Chunk] [Step 1/2] Deeply extracting entities..." if is_en else f"🧠 [单一切块] [Step 1/2] 正在深度提取实体..."
-            report_progress(0.3, 1.0, msg1)
+            report_progress(0.25, 1.0, msg1)
             chunk_entities = self.agent.extract_entities_with_reflection(chunk, use_reflection=use_reflection, entity_lang=entity_lang)
             for ent in chunk_entities:
                 if isinstance(ent, dict):
-                    ent["doc_source"] = source_name
+                    ent["doc_source"] = c_source
             self._merge_entities(chunk_entities)
 
             msg2 = f"🔗 [Single Chunk] [Step 2/2] Deducing network relations..." if is_en else f"🔗 [单一切块] [Step 2/2] 正在推演实体间的网络调控关系..."
-            report_progress(0.7, 1.0, msg2)
+            report_progress(0.65, 1.0, msg2)
             chunk_relations = self.agent.extract_relations(chunk, self.global_entities)
             default_reason = "No detailed explanation" if is_en else "无详细解释"
             source_prefix = "Source" if is_en else "源自"
+            source_tag = c_source if c_source != source_name else current_source
             for rel in chunk_relations:
                 if isinstance(rel, dict):
-                    rel["doc_source"] = source_name
+                    rel["doc_source"] = c_source
                     original_reason = rel.get("reason", default_reason)
-                    rel["reason"] = f"{original_reason} [{source_prefix}: {current_source}]"
+                    rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
             self._merge_relations(chunk_relations)
-
-            self._run_vision_stage(
-                pdf_path, start_page, end_page,
-                vision_strategy, vision_keyword, vision_model,
-                source_name, current_source, entity_lang, is_en, report_progress
-            )
 
             print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")
             msg_done = f"✨ Analysis complete! Caught {len(self.global_entities)} entities, {len(self.global_relations)} relations." if is_en else f"✨ 分析完毕！本轮共捕获 {len(self.global_entities)} 个实体，{len(self.global_relations)} 条关系。"
@@ -261,8 +257,8 @@ class BioGraphPipeline:
                 raw_chunk_entities[idx] = ents if ents else []
                 completed_entities += 1
 
-                # 主线程安全更新进度：0.1 -> 0.5
-                progress = 0.1 + 0.4 * (completed_entities / total_chunks)
+                # 主线程安全更新进度：0.15 -> 0.52
+                progress = 0.15 + 0.37 * (completed_entities / total_chunks)
                 msg = (
                     f"🧠 [Entities {completed_entities}/{total_chunks}] Chunk {idx + 1} extracted..."
                     if is_en else
@@ -272,9 +268,10 @@ class BioGraphPipeline:
 
         # 阶段 1 汇总：主线程安全合并至全局实体库
         for idx, ents in enumerate(raw_chunk_entities):
+            c_source = chunk_sources[idx]
             for ent in ents:
                 if isinstance(ent, dict):
-                    ent["doc_source"] = source_name
+                    ent["doc_source"] = c_source
             self._merge_entities(ents)
 
         msg_entities_done = (
@@ -282,7 +279,7 @@ class BioGraphPipeline:
             if is_en else
             f"🧬 全局实体合并完成 (共 {len(self.global_entities)} 个标准实体)，即将推演关系网..."
         )
-        report_progress(0.52, 1.0, msg_entities_done)
+        report_progress(0.55, 1.0, msg_entities_done)
 
         # =============================================================
         # 阶段 2：共享完整实体字典的全量并行关系推演 (Phase 2: Parallel Relation Extraction)
@@ -323,18 +320,14 @@ class BioGraphPipeline:
         default_reason = "No detailed explanation" if is_en else "无详细解释"
         source_prefix = "Source" if is_en else "源自"
         for idx, rels in enumerate(raw_chunk_relations):
+            c_source = chunk_sources[idx]
+            source_tag = c_source if c_source != source_name else current_source
             for rel in rels:
                 if isinstance(rel, dict):
-                    rel["doc_source"] = source_name
+                    rel["doc_source"] = c_source
                     original_reason = rel.get("reason", default_reason)
-                    rel["reason"] = f"{original_reason} [{source_prefix}: {current_source}]"
+                    rel["reason"] = f"{original_reason} [{source_prefix}: {source_tag}]"
             self._merge_relations(rels)
-
-        self._run_vision_stage(
-            pdf_path, start_page, end_page,
-            vision_strategy, vision_keyword, vision_model,
-            source_name, current_source, entity_lang, is_en, report_progress
-        )
 
         print(f"\n📊 [Pipeline] 分析完毕！全局共捕获 {len(self.global_entities)} 个标准实体，{len(self.global_relations)} 条调控关系。")
 

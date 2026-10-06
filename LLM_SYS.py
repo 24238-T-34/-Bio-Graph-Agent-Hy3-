@@ -632,56 +632,39 @@ class BioBrainAgent:
         raw_response = self._ask_llm(system_prompt, user_content)
         return raw_response
 
-    def extract_graph_from_figure(self, image_bytes, image_ext="png", caption="", vision_model=None, entity_lang="关闭 (保持原文语言)"):
+    def transcribe_figure_to_text(self, image_bytes, image_ext="png", caption="", vision_model=None, output_lang="zh"):
         """
-        多模态视觉智能体：专门分析生物文献中的信号通路图、机制假说图与图文摘要 (Pathway Diagrams)
+        多模态视觉前置转译：专门将信号通路机制图 (Pathway Diagram) 或图文摘要转译为详尽严谨的学术机制文本描述块
         """
         import base64
         b64_str = base64.b64encode(image_bytes).decode("utf-8")
         clean_ext = image_ext.lower().replace(".", "")
         mime_type = "image/jpeg" if clean_ext in ["jpg", "jpeg"] else "image/png"
 
-        language_instruction = ""
-        if "中文" in entity_lang:
-            language_instruction = "\n【⚠️ 语言强力约束】：请务必将提取出的所有实体的“standard_name”统一翻译并输出为规范的【中文名称】（通用学术英文专有缩写可保留）。"
-        elif "English" in entity_lang:
-            language_instruction = "\n【⚠️ 语言强力约束】：请务必将提取出的所有实体的“standard_name”统一输出为规范的【英文 (English)】。"
+        is_en = "en" in output_lang.lower()
+        lang_instruction = "Please output the description strictly in English." if is_en else "请使用严谨清晰的中文学术语言输出。"
 
         system_prompt = f"""你是一位顶尖的生物医学多模态与系统生物学分析专家。
-你的任务是解析生物文献中的【信号通路图 / 机制假说图 / 图文摘要 (Pathway Diagram / Mechanism Figure)】，提取图中所描绘的核心生物学实体及其相互调控网络。
+你的任务是将生物文献中的【信号通路图 / 机制假说图 / 图文摘要 (Pathway Diagram / Mechanism Figure)】完整转化为详尽、严谨的学术机制文本描述，供后续知识图谱抽取引擎分析。
 
-【⚠️ 视觉拓扑理解核心规则】：
-1. 识别生化实体 (Entities)：
-   - 包括蛋白质、受体、酶、基因、转录因子、小分子化合物/药物、复合物或细胞表型/疾病节点。
-   - 给出每个实体的 standard_name（标准名称）与 category（分类，如 Gene/Protein, Chemical, Disease/Phenotype, Cellular Component 等）。
-   - 保留图中标识的亚细胞空间定位或修饰状态（如在核内、胞质、膜上，或磷酸化 p-XXX）。
+【⚠️ 视觉拓扑理解与描述核心要求】：
+1. 【识别全部生化实体】：完整列出图中标识的所有生物分子、受体、酶、基因、转录因子、小分子化合物/药物、复合物及细胞表型/疾病，写明其名称及亚细胞定位（如细胞外、膜受体、胞质、胞核）。
+2. 【阐明分子调控与级联通路（最核心）】：
+   - 逐一明确描述分子间的有向调控关系（明确“谁调控谁”）：
+     * 尖头箭头 (➔)：明确指出 A 激活、促进、诱导、磷酸化或上调 B；
+     * 平头阻断棒 (┫)：明确指出 A 抑制、阻断、拮抗、降解或下调 B；
+     * 双向箭头或接触连线：明确指出 A 与 B 相互结合、形成复合物；
+     * 易位/生化修饰：明确指出磷酸化、入核、转运等。
+   - 完整记录上下游信号级联反应链。
+3. 【实验干预与背景】：若图中有药物、抑制剂、基因突变/敲除等干预，明确说明其作用靶点及生物学效应。
 
-2. 识别有向调控关系 (Relations)：
-   - 【正向调控】：尖头箭头 (➔ 或 ->)，表示上调、激活、促进、诱导。
-   - 【负向调控】：平头阻断线 (┫)，表示下调、阻断、抑制、拮抗。
-   - 【物理结合 / 相互作用】：双向箭头或接触连线，表示形成复合物、物理结合。
-   - 【生化反应 / 易位】：修饰转化、磷酸化、入核/转运。
-   - 提取规范三元组：source (作用源), target (受作用方), relation (从 '正向调控', '负向调控', '物理结合', '生化反应', '相关关联' 中选取), evidence (简短描述图中的视觉拓扑依据，如 '图中显示A通过箭头激活B')。
-
-3. 输出格式强力约束：
-   - 必须且仅输出严格合法的 JSON 代码块，严禁包含任何前缀或后缀闲聊：
-```json
-{{
-  "entities": [
-    {{"standard_name": "...", "category": "...", "aliases": []}}
-  ],
-  "relations": [
-    {{"source": "...", "target": "...", "relation": "正向调控", "evidence": "..."}}
-  ]
-}}
-```{language_instruction}
-"""
+{lang_instruction}
+请直接输出结构化、严谨的机制解读正文，无需输出 JSON 代码块。"""
 
         caption_info = f"\n【插图关联图注说明】：{caption}" if caption else ""
         prompt_text = (
-            f"请仔细分析这张文献中的插图。{caption_info}\n"
-            "重点识别其中的生化分子、受体、基因、蛋白复合物及它们之间的箭头调控拓扑网络。"
-            "严格区分激活箭头 (➔) 与抑制平头线 (┫)，按规范输出 JSON。"
+            f"请仔细观察这张文献插图。{caption_info}\n"
+            "请详细转录并解析图中的所有生物实体、箭头调控方向（激活/抑制/结合）及级联通路机制。"
         )
 
         multimodal_content = [
@@ -690,22 +673,29 @@ class BioBrainAgent:
         ]
 
         effective_model = vision_model or self.model
-        print(f"👁️ [Agent] 正在调用专职视觉模型解析机制图 (模型: {effective_model})...")
+        print(f"👁️ [Agent] 正在调用专职视觉模型前置转译机制图为学术文本块 (模型: {effective_model})...")
         try:
             raw_response = self._ask_llm(
                 system_prompt=system_prompt,
                 user_content=multimodal_content,
                 model_override=vision_model
             )
-            cleaned = self._clean_json_string(raw_response)
-            data = json.loads(cleaned)
-            entities = data.get("entities", [])
-            relations = data.get("relations", [])
-            print(f"✅ [Agent] 机制图解析成功！捕获 {len(entities)} 个实体，{len(relations)} 条视觉调控关系。")
-            return entities, relations
+            print(f"✅ [Agent] 机制图成功转译为机制文本块 (长度: {len(raw_response)} 字符)！")
+            return raw_response
         except Exception as e:
-            print(f"⚠️ [Agent] 机制图解析失败或模型未返回有效JSON: {e}")
+            print(f"⚠️ [Agent] 视觉模型机制图转译失败: {e}")
+            return ""
+
+    def extract_graph_from_figure(self, image_bytes, image_ext="png", caption="", vision_model=None, entity_lang="关闭 (保持原文语言)"):
+        """
+        多模态视觉智能体（备用兼容接口）
+        """
+        text_desc = self.transcribe_figure_to_text(image_bytes, image_ext, caption, vision_model)
+        if not text_desc:
             return [], []
+        ents = self.extract_entities_with_reflection(text_desc, use_reflection=True, entity_lang=entity_lang)
+        rels = self.extract_relations(text_desc, ents)
+        return ents, rels
 
 
 
