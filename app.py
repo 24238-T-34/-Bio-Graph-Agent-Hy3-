@@ -1641,17 +1641,21 @@ with right_col:
 
     # 🏷️ 项目课题自由命名输入框（作为存储属性值，不直接用作文件名或物理目录）
     curr_proj_name = get_current_project_name()
-    new_proj_name_input = st.text_input(
+    if "project_name_input_widget" not in st.session_state:
+        st.session_state["project_name_input_widget"] = curr_proj_name
+
+    def on_project_name_change():
+        val = str(st.session_state.get("project_name_input_widget", "")).strip()
+        if val and val != get_current_project_name():
+            st.session_state.current_project_name = val
+            save_local_vault()
+
+    st.text_input(
         t("project_name_label"),
-        value=curr_proj_name,
         key="project_name_input_widget",
+        on_change=on_project_name_change,
         help=t("project_name_help")
     )
-    if new_proj_name_input and new_proj_name_input.strip() != curr_proj_name:
-        st.session_state.current_project_name = new_proj_name_input.strip()
-        st.session_state["project_name_input_widget"] = new_proj_name_input.strip()
-        save_local_vault()
-        st.rerun()
 
     col_btn1, col_btn2 = st.columns(2)
 
