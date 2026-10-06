@@ -150,8 +150,9 @@ class PDFProcessor:
                     page_text = page.get_text()
 
                     captions = list(kw_pattern.finditer(page_text))
-                    if captions:
-                        matched_caption = captions[0].group(0).strip()
+                    is_single_page = (total_pages == 1)
+                    if captions or is_single_page:
+                        matched_caption = captions[0].group(0).strip() if captions else (kw_clean or f"Page {page_num} Diagram")
                         img_list = page.get_images()
                         for img_info in img_list:
                             xref = img_info[0]
@@ -163,9 +164,22 @@ class PDFProcessor:
                                     "ext": base_img["ext"],
                                     "page": page_num,
                                     "caption": matched_caption,
-                                    "label": kw_clean
+                                    "label": kw_clean or f"Page{page_num}_Fig"
                                 })
                                 break
+
+                        # 💡 矢量通路图/单页海报兜底：若命中了关键词或为单页海报，但未找到光栅位图，且页面包含矢量绘图
+                        if not matched_figures and (len(page.get_drawings()) >= 10 or is_single_page):
+                            print(f"📐 [PDFProcessor] 页面 {page_num} 检测到矢量绘图 ({len(page.get_drawings())} 个路径)，自动执行 150-DPI 高清机制图渲染...")
+                            pix = page.get_pixmap(dpi=150)
+                            matched_figures.append({
+                                "image_bytes": pix.tobytes("png"),
+                                "ext": "png",
+                                "page": page_num,
+                                "caption": matched_caption,
+                                "label": kw_clean or f"Page{page_num}_VectorFig"
+                            })
+
                         if matched_figures:
                             break
 
@@ -175,6 +189,7 @@ class PDFProcessor:
                     page = doc[page_idx]
                     page_num = page_idx + 1
                     img_list = page.get_images()
+                    found_raster = False
                     for idx, img_info in enumerate(img_list):
                         xref = img_info[0]
                         base_img = doc.extract_image(xref)
@@ -187,6 +202,19 @@ class PDFProcessor:
                                 "caption": f"Page {page_num} Figure {idx + 1}",
                                 "label": f"Page{page_num}_Fig{idx + 1}"
                             })
+                            found_raster = True
+
+                    # 💡 矢量机制图/单页海报兜底：若本页无符合尺寸的光栅图，但包含显著矢量绘图或为单页海报
+                    if not found_raster and (len(page.get_drawings()) >= 20 or total_pages == 1):
+                        print(f"📐 [PDFProcessor] 页面 {page_num} 检测到矢量绘图 ({len(page.get_drawings())} 个路径)，自动执行 150-DPI 高清机制图渲染...")
+                        pix = page.get_pixmap(dpi=150)
+                        matched_figures.append({
+                            "image_bytes": pix.tobytes("png"),
+                            "ext": "png",
+                            "page": page_num,
+                            "caption": f"Page {page_num} 机制通路图 (矢量渲染)",
+                            "label": f"Page{page_num}_VectorFig"
+                        })
 
             doc.close()
         except Exception as e:
