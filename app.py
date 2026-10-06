@@ -507,7 +507,6 @@ def switch_to_project(proj_id: str) -> bool:
         pname = data.get("project_name", proj_id)
         st.session_state.current_project_id = proj_id
         st.session_state.current_project_name = pname
-        st.session_state["project_name_input_widget"] = pname
         st.session_state.master_entities = data.get("entities", [])
         st.session_state.master_relations = data.get("relations", [])
         loaded_files = data.get("analyzed_files", [])
@@ -1641,8 +1640,8 @@ with right_col:
 
     # 🏷️ 项目课题自由命名输入框（作为存储属性值，不直接用作文件名或物理目录）
     curr_proj_name = get_current_project_name()
-    if "project_name_input_widget" not in st.session_state:
-        st.session_state["project_name_input_widget"] = curr_proj_name
+    # 保证在 widget 实例化前与当前工程名称安全同步，避免在实例化后修改抛出 StreamlitAPIException
+    st.session_state["project_name_input_widget"] = curr_proj_name
 
     def on_project_name_change():
         val = str(st.session_state.get("project_name_input_widget", "")).strip()
@@ -1683,7 +1682,6 @@ with right_col:
                 new_pname = datetime.now().strftime("课题_%Y%m%d_%H%M%S")
                 st.session_state.current_project_id = new_pid
                 st.session_state.current_project_name = new_pname
-                st.session_state["project_name_input_widget"] = new_pname
 
                 save_local_vault()
                 st.session_state.project_loaded_success = False
@@ -1718,7 +1716,6 @@ with right_col:
                 matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
                 st.session_state.current_project_id = matched_pid
                 st.session_state.current_project_name = stored_pname
-                st.session_state["project_name_input_widget"] = stored_pname
 
                 st.session_state.master_entities = loaded_data.get("entities", [])
                 st.session_state.master_relations = loaded_data.get("relations", [])
