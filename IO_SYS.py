@@ -4,16 +4,10 @@ import pypdf
 from pyvis.network import Network
 import re
 from pypdf import PdfReader
-
-# =====================================================================
-# 1. PDF 处理器类
-# =====================================================================
-import os
-import webbrowser
-import pypdf
-from pyvis.network import Network
-import re
-from pypdf import PdfReader
+import hashlib
+import json
+import datetime
+from typing import Optional, List, Dict, Union, Tuple
 
 
 # =====================================================================
@@ -412,6 +406,8 @@ def sanitize_paper_filename(name: str, max_len: int = 160) -> str:
     if not name:
         return ""
     clean = str(name).strip()
+    # 剥离可能存在的 .pdf 扩展名，确保生成的学术标题纯净
+    clean = re.sub(r'(?i)\.pdf$', '', clean).strip()
 
     # 清除不可见软连字符与零宽字符
     clean = clean.replace("\xad", "").replace("\u200b", "").replace("\ufeff", "")
@@ -634,4 +630,296 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 1, agent=None):
             return clean_final, pmid, candidate_source
 
     return None, pmid, "unrecognized"
+
+
+# =====================================================================
+# 4. 文献不可变哈希身份与注册表系统 (Hash-Centric Paper Identity & Registry)
+# =====================================================================
+PROJECTS_ROOT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "projects")
+
+
+def resolve_project_dir(project_dir_or_id: str) -> str:
+    """辅助解析工程目录绝对路径"""
+    if not project_dir_or_id:
+        return ""
+    if os.path.isabs(project_dir_or_id) and os.path.exists(project_dir_or_id):
+        return project_dir_or_id
+    cand = os.path.join(PROJECTS_ROOT_DIR, project_dir_or_id)
+    if os.path.exists(cand):
+        return cand
+    if os.path.exists(project_dir_or_id):
+        return os.path.abspath(project_dir_or_id)
+    return cand
+
+
+def compute_file_content_hash(path_or_bytes: Union[str, bytes]) -> str:
+    """计算物理文件的 SHA-256 内容哈希（作为跨更名操作的不可变唯一主键）"""
+    if isinstance(path_or_bytes, (bytes, bytearray)):
+        return f"sha256_{hashlib.sha256(path_or_bytes).hexdigest()}"
+    if isinstance(path_or_bytes, str) and os.path.exists(path_or_bytes):
+        hasher = hashlib.sha256()
+        try:
+            with open(path_or_bytes, "rb") as f:
+                while True:
+                    chunk = f.read(65536)
+                    if not chunk:
+                        break
+                    hasher.update(chunk)
+            return f"sha256_{hasher.hexdigest()}"
+        except Exception as e:
+            print(f"⚠️ [compute_file_content_hash] 计算哈希受阻: {e}")
+            return ""
+    return ""
+
+
+def compute_source_identity_hash(source_str: str) -> str:
+    """针对线上 PMID 或系统虚拟来源生成规范不可变哈希"""
+    if not source_str:
+        return "manual:empty"
+    src = str(source_str).strip()
+    pmid_m = re.search(r"(?:^|[\W_])(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", src, re.I)
+    if not pmid_m:
+        pmid_m = re.search(r"^(\d{6,9})$", src)
+    if pmid_m:
+        return f"pmid:{pmid_m.group(1)}"
+
+    clean_tag = src.lower().strip()
+    return f"virtual:{hashlib.md5(clean_tag.encode('utf-8')).hexdigest()[:12]}"
+
+
+def get_clean_display_title(name: str) -> str:
+    """获取纯净的前端展示标题（严格剥离末尾的 .pdf 后缀）"""
+    if not name:
+        return ""
+    clean = str(name).strip()
+    clean = re.sub(r'(?i)\.pdf$', '', clean).strip()
+    return clean
+
+
+def get_physical_pdf_filename(name: str) -> str:
+    """获取合法的磁盘物理文件名（严格确保以 .pdf 结尾）"""
+    if not name:
+        return "unnamed_paper.pdf"
+    clean = str(name).strip()
+    if clean.lower().endswith(".pdf"):
+        return clean
+    return f"{clean}.pdf"
+
+
+def load_project_paper_registry(project_dir_or_id: str) -> dict:
+    """
+    载入工程文献哈希注册表。若本地尚无注册表，则自动通过本地 papers/ 与 project.biokg 进行冷启动全盘建表
+    """
+    pdir = resolve_project_dir(project_dir_or_id)
+    reg_file = os.path.join(pdir, "paper_registry.json")
+    if os.path.exists(reg_file):
+        try:
+            with open(reg_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "papers" in data:
+                    return data
+        except Exception as e:
+            print(f"⚠️ [load_project_paper_registry] 读取注册表失败: {e}")
+
+    # 冷启动全量扫描并构建
+    registry = {"version": "2.0", "papers": {}}
+    papers_dir = os.path.join(pdir, "papers")
+    if os.path.exists(papers_dir):
+        for fname in os.listdir(papers_dir):
+            fpath = os.path.join(papers_dir, fname)
+            if os.path.isfile(fpath) and fname.lower().endswith(".pdf"):
+                fhash = compute_file_content_hash(fpath)
+                if fhash:
+                    disp_name = get_clean_display_title(fname)
+                    registry["papers"][fhash] = {
+                        "doc_hash": fhash,
+                        "display_name": disp_name,
+                        "physical_file": fname,
+                        "aliases": list(dict.fromkeys([fname, disp_name])),
+                        "pmid": None,
+                        "doi": None,
+                        "source_type": "pdf",
+                        "file_size": os.path.getsize(fpath),
+                        "updated_at": datetime.datetime.now().isoformat()
+                    }
+
+    # 检查 project.biokg 中可能存在的历史文献与 PMID 来源
+    pkg_file = os.path.join(pdir, "project.biokg")
+    if os.path.exists(pkg_file):
+        try:
+            with open(pkg_file, "r", encoding="utf-8") as f:
+                pkg_data = json.load(f)
+            # 若已有打包的 paper_registry，优先合并
+            pkg_reg = pkg_data.get("paper_registry", {})
+            if isinstance(pkg_reg, dict) and "papers" in pkg_reg:
+                for h, item in pkg_reg.get("papers", {}).items():
+                    if h not in registry["papers"]:
+                        registry["papers"][h] = item
+                    else:
+                        merged_aliases = list(dict.fromkeys(registry["papers"][h].get("aliases", []) + item.get("aliases", [])))
+                        registry["papers"][h]["aliases"] = merged_aliases
+
+            # 兼容 analyzed_files
+            for af in pkg_data.get("analyzed_files", []):
+                af_str = str(af).strip()
+                if not af_str:
+                    continue
+                pmid_m = re.search(r"(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", af_str, re.I)
+                if pmid_m and ("pubmed" in af_str.lower() or "pmid" in af_str.lower()):
+                    pmid_val = pmid_m.group(1)
+                    v_hash = f"pmid:{pmid_val}"
+                    if v_hash not in registry["papers"]:
+                        registry["papers"][v_hash] = {
+                            "doc_hash": v_hash,
+                            "display_name": af_str,
+                            "physical_file": None,
+                            "aliases": [af_str, f"PubMed:{pmid_val}", pmid_val],
+                            "pmid": pmid_val,
+                            "doi": None,
+                            "source_type": "online_pmid",
+                            "file_size": 0,
+                            "updated_at": datetime.datetime.now().isoformat()
+                        }
+        except Exception as e:
+            print(f"⚠️ [load_project_paper_registry] biokg 补充建表失败: {e}")
+
+    save_project_paper_registry(pdir, registry)
+    return registry
+
+
+def save_project_paper_registry(project_dir_or_id: str, registry: dict):
+    """原子保存文献哈希注册表到工程专属目录"""
+    pdir = resolve_project_dir(project_dir_or_id)
+    if not pdir:
+        return
+    os.makedirs(pdir, exist_ok=True)
+    reg_file = os.path.join(pdir, "paper_registry.json")
+    try:
+        with open(reg_file, "w", encoding="utf-8") as f:
+            json.dump(registry, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"⚠️ [save_project_paper_registry] 写入注册表失败: {e}")
+
+
+def register_or_update_paper(project_dir_or_id: str, doc_hash: str, display_name: str,
+                             physical_file: Optional[str] = None, aliases: Optional[List[str]] = None,
+                             pmid: Optional[str] = None, doi: Optional[str] = None,
+                             source_type: str = "pdf", file_size: int = 0) -> dict:
+    """在注册表中登记或更新文献信息，自动追加并维护曾用名别名链"""
+    registry = load_project_paper_registry(project_dir_or_id)
+    papers = registry.setdefault("papers", {})
+
+    clean_disp = get_clean_display_title(display_name)
+    raw_aliases = aliases or []
+    new_aliases = [clean_disp]
+    if physical_file:
+        new_aliases.append(physical_file)
+        new_aliases.append(get_clean_display_title(physical_file))
+    for a in raw_aliases:
+        if a:
+            new_aliases.append(str(a).strip())
+            new_aliases.append(get_clean_display_title(str(a)))
+
+    if doc_hash in papers:
+        item = papers[doc_hash]
+        old_disp = item.get("display_name", "")
+        old_phys = item.get("physical_file", "")
+        if old_disp:
+            new_aliases.append(old_disp)
+            new_aliases.append(get_clean_display_title(old_disp))
+        if old_phys:
+            new_aliases.append(old_phys)
+            new_aliases.append(get_clean_display_title(old_phys))
+        existing_aliases = item.get("aliases", [])
+        combined = list(dict.fromkeys(existing_aliases + new_aliases))
+        item["display_name"] = clean_disp
+        if physical_file:
+            item["physical_file"] = physical_file
+        item["aliases"] = combined
+        if pmid:
+            item["pmid"] = pmid
+        if doi:
+            item["doi"] = doi
+        if file_size > 0:
+            item["file_size"] = file_size
+        item["updated_at"] = datetime.datetime.now().isoformat()
+    else:
+        papers[doc_hash] = {
+            "doc_hash": doc_hash,
+            "display_name": clean_disp,
+            "physical_file": physical_file,
+            "aliases": list(dict.fromkeys(new_aliases)),
+            "pmid": pmid,
+            "doi": doi,
+            "source_type": source_type,
+            "file_size": file_size,
+            "updated_at": datetime.datetime.now().isoformat()
+        }
+
+    save_project_paper_registry(project_dir_or_id, registry)
+    return papers[doc_hash]
+
+
+def resolve_paper_identity(project_dir_or_id: str, query_ref: str, registry: Optional[dict] = None) -> Optional[dict]:
+    """
+    多级文献身份智能解析器：
+    输入 query_ref（哈希、当前展示名、带/不带 .pdf 的物理名、曾用名、PMID）
+    精准解析并返回注册表项（含 doc_hash, display_name, physical_file, aliases 等）
+    """
+    if not query_ref:
+        return None
+    ref_clean = str(query_ref).strip()
+    if not ref_clean:
+        return None
+
+    if registry is None:
+        registry = load_project_paper_registry(project_dir_or_id)
+    papers = registry.get("papers", {})
+
+    # 1. 精确哈希匹配
+    if ref_clean in papers:
+        return papers[ref_clean]
+
+    # 2. display_name 匹配
+    ref_no_pdf = get_clean_display_title(ref_clean)
+    for h, item in papers.items():
+        if item.get("display_name") == ref_no_pdf or item.get("display_name") == ref_clean:
+            return item
+
+    # 3. physical_file 匹配
+    ref_with_pdf = get_physical_pdf_filename(ref_clean)
+    for h, item in papers.items():
+        if item.get("physical_file") == ref_clean or item.get("physical_file") == ref_with_pdf:
+            return item
+
+    # 4. aliases 曾用名/别名链命中
+    for h, item in papers.items():
+        aliases = item.get("aliases", [])
+        if ref_clean in aliases or ref_no_pdf in aliases or ref_with_pdf in aliases:
+            return item
+
+    # 5. PMID 匹配
+    pmid_m = re.search(r"(?:^|[\W_])(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", ref_clean, re.I)
+    if not pmid_m:
+        pmid_m = re.search(r"^(\d{6,9})$", ref_clean)
+    if pmid_m:
+        pmid_digits = pmid_m.group(1)
+        for h, item in papers.items():
+            if item.get("pmid") == pmid_digits or h == f"pmid:{pmid_digits}":
+                return item
+
+    # 6. 物理磁盘哈希即时匹配（如用户在外部重命名了磁盘文件）
+    pdir = resolve_project_dir(project_dir_or_id)
+    papers_dir = os.path.join(pdir, "papers")
+    if os.path.exists(papers_dir):
+        cand_path = os.path.join(papers_dir, ref_clean)
+        if not os.path.exists(cand_path) and os.path.exists(os.path.join(papers_dir, ref_with_pdf)):
+            cand_path = os.path.join(papers_dir, ref_with_pdf)
+        if os.path.exists(cand_path) and os.path.isfile(cand_path):
+            disk_hash = compute_file_content_hash(cand_path)
+            if disk_hash and disk_hash in papers:
+                return papers[disk_hash]
+
+    return None
+
 

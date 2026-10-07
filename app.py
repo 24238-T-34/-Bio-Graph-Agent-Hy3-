@@ -5,7 +5,13 @@ import shutil
 from datetime import datetime
 from pypdf import PdfReader
 from back_logic import BioGraphPipeline,GraphVisualizer
-from IO_SYS import extract_paper_title_and_pmid, sanitize_paper_filename
+from IO_SYS import (
+    extract_paper_title_and_pmid, sanitize_paper_filename,
+    compute_file_content_hash, compute_source_identity_hash,
+    get_clean_display_title, get_physical_pdf_filename,
+    load_project_paper_registry, save_project_paper_registry,
+    register_or_update_paper, resolve_paper_identity
+)
 import streamlit.components.v1 as components
 import gc
 import fitz  # 🚀 优化：把 PyMuPDF 移到文件顶部，规范代码结构
@@ -406,23 +412,51 @@ def get_current_papers_dir() -> str:
     return get_project_papers_dir_by_id(get_current_project_id())
 
 
-def find_project_paper(fname: str) -> Optional[str]:
-    """在当前工程及所有本地工程的 papers/ 目录中查找文献，如跨工程命中则自动自愈拷贝"""
+def find_project_paper(fname: str, proj_id: str = None) -> Optional[str]:
+    """在当前工程及所有本地工程的 papers/ 目录中查找文献，支持哈希、纯净展示名、物理名与别名多级检索及自动自愈拷贝"""
     if not fname:
         return None
-    cur_path = os.path.join(get_current_papers_dir(), fname)
-    if os.path.exists(cur_path):
-        return cur_path
-    # 跨工程检索与自动自愈补齐
+    pid = proj_id if proj_id else get_current_project_id()
+    cur_papers_dir = get_project_papers_dir_by_id(pid)
+
+    # 1. 尝试直接按原字符串在当前工程查找
+    cand_path = os.path.join(cur_papers_dir, fname)
+    if os.path.exists(cand_path) and os.path.isfile(cand_path):
+        return cand_path
+
+    # 2. 尝试追加 .pdf 后缀查找
+    pdf_name = get_physical_pdf_filename(fname)
+    cand_path_pdf = os.path.join(cur_papers_dir, pdf_name)
+    if os.path.exists(cand_path_pdf) and os.path.isfile(cand_path_pdf):
+        return cand_path_pdf
+
+    # 3. 通过注册表解析 (命中 doc_hash, display_name, physical_file, 或 aliases)
+    ident = resolve_paper_identity(pid, fname)
+    if ident:
+        phys = ident.get("physical_file")
+        if phys:
+            reg_phys_path = os.path.join(cur_papers_dir, phys)
+            if os.path.exists(reg_phys_path) and os.path.isfile(reg_phys_path):
+                return reg_phys_path
+
+    # 4. 跨工程检索与自动自愈补齐
     if os.path.exists(PROJECTS_ROOT_DIR):
-        for pid in os.listdir(PROJECTS_ROOT_DIR):
-            alt_path = os.path.join(PROJECTS_ROOT_DIR, pid, "papers", fname)
-            if os.path.exists(alt_path) and os.path.isfile(alt_path):
-                try:
-                    shutil.copy2(alt_path, cur_path)
-                    return cur_path
-                except Exception:
-                    return alt_path
+        for other_pid in os.listdir(PROJECTS_ROOT_DIR):
+            if other_pid == pid:
+                continue
+            alt_papers = os.path.join(PROJECTS_ROOT_DIR, other_pid, "papers")
+            search_candidates = [fname, pdf_name]
+            if ident and ident.get("physical_file"):
+                search_candidates.append(ident.get("physical_file"))
+            for cand_f in search_candidates:
+                alt_path = os.path.join(alt_papers, cand_f)
+                if os.path.exists(alt_path) and os.path.isfile(alt_path):
+                    target_local = os.path.join(cur_papers_dir, cand_f if cand_f.lower().endswith(".pdf") else f"{cand_f}.pdf")
+                    try:
+                        shutil.copy2(alt_path, target_local)
+                        return target_local
+                    except Exception:
+                        return alt_path
     return None
 
 
@@ -485,47 +519,53 @@ def get_expected_papers_for_project(proj_id: str, data: Optional[dict] = None) -
 
 
 def get_project_missing_papers(proj_id: str, data: Optional[dict] = None) -> List[str]:
-    """检测指定工程中缺失的实体文献（在本地 papers 目录中不存在且无法跨工程检索到的文件）"""
+    """检测指定工程中缺失的实体文献（通过哈希、别名链与多级检索，全面豁免已更名文献）"""
     expected = get_expected_papers_for_project(proj_id, data)
     if not expected:
         return []
 
-    p_papers_dir = get_project_papers_dir_by_id(proj_id)
     missing = []
     for fname in expected:
-        local_path = os.path.join(p_papers_dir, fname)
-        if not os.path.exists(local_path):
-            # 尝试跨工程检索自愈
-            healed = False
-            if os.path.exists(PROJECTS_ROOT_DIR):
-                for pid in os.listdir(PROJECTS_ROOT_DIR):
-                    alt_path = os.path.join(PROJECTS_ROOT_DIR, pid, "papers", fname)
-                    if os.path.exists(alt_path) and os.path.isfile(alt_path):
-                        try:
-                            shutil.copy2(alt_path, local_path)
-                            healed = True
-                            break
-                        except Exception:
-                            healed = True
-                            break
-            if not healed:
-                missing.append(fname)
+        # 使用增强版检索（涵盖别名映射、.pdf 后缀对齐与跨工程自愈）
+        found_path = find_project_paper(fname, proj_id=proj_id)
+        if not found_path:
+            # 再使用 resolve_paper_identity 终极核对
+            ident = resolve_paper_identity(proj_id, fname)
+            if ident and ident.get("physical_file"):
+                p_papers_dir = get_project_papers_dir_by_id(proj_id)
+                if os.path.exists(os.path.join(p_papers_dir, ident["physical_file"])):
+                    continue
+            missing.append(fname)
 
     return missing
 
 
 def save_replenished_paper(target_fname: str, file_bytes: bytes):
-    """补齐缺失文献：将上传的数据写入当前工程 papers 目录并同步更新记忆库"""
+    """补齐缺失文献：将上传的数据写入当前工程 papers 目录并同步更新记忆库与哈希注册表"""
     target_dir = get_current_papers_dir()
     os.makedirs(target_dir, exist_ok=True)
-    fpath = os.path.join(target_dir, target_fname)
+    phys_name = get_physical_pdf_filename(target_fname)
+    fpath = os.path.join(target_dir, phys_name)
     with open(fpath, "wb") as f:
         f.write(file_bytes)
 
+    fhash = compute_file_content_hash(file_bytes)
+    disp_name = get_clean_display_title(target_fname)
+    cur_pid = get_current_project_id()
+    register_or_update_paper(
+        cur_pid,
+        doc_hash=fhash,
+        display_name=disp_name,
+        physical_file=phys_name,
+        aliases=[target_fname, disp_name, phys_name],
+        file_size=len(file_bytes),
+        source_type="pdf"
+    )
+
     if "analyzed_files" not in st.session_state:
         st.session_state.analyzed_files = []
-    if target_fname not in st.session_state.analyzed_files:
-        st.session_state.analyzed_files.append(target_fname)
+    if disp_name not in st.session_state.analyzed_files and target_fname not in st.session_state.analyzed_files:
+        st.session_state.analyzed_files.append(disp_name)
 
     save_local_vault()
 
@@ -549,71 +589,260 @@ def find_project_by_id_or_name(proj_id: str, proj_name: str) -> str:
 
 
 def save_analyzed_paper(file_name: str, file_bytes: bytes):
-    """保存解析的论文到当前工程的 papers 目录"""
+    """保存解析的论文到当前工程的 papers 目录并同步注册不可变哈希索引"""
     target_dir = get_current_papers_dir()
-    fpath = os.path.join(target_dir, file_name)
+    phys_name = get_physical_pdf_filename(file_name)
+    fpath = os.path.join(target_dir, phys_name)
     with open(fpath, "wb") as f:
         f.write(file_bytes)
 
+    fhash = compute_file_content_hash(file_bytes)
+    disp_name = get_clean_display_title(file_name)
+    cur_pid = get_current_project_id()
+    register_or_update_paper(
+        cur_pid,
+        doc_hash=fhash,
+        display_name=disp_name,
+        physical_file=phys_name,
+        aliases=[file_name, disp_name, phys_name],
+        file_size=len(file_bytes),
+        source_type="pdf"
+    )
+
 
 def rename_project_paper(old_fname: str, new_fname: str, proj_id: str = None) -> bool:
-    """原子更新：将工程文件夹内的文献物理重命名，并同步更新会话文献列表、实体来源、关系证据及 project.biokg"""
+    """
+    原子更新：将工程文献物理重命名（严格确保 .pdf 后缀），同步更新注册表别名链、纯净展示名（纯净无 .pdf 后缀）、
+    会话文献列表、实体与关系 doc_source 及 doc_hash 双锚定，并原子落盘 project.biokg 与 paper_registry.json
+    """
     if not old_fname or not new_fname or old_fname == new_fname:
         return True
 
     target_pid = proj_id if proj_id else get_current_project_id()
     papers_dir = get_project_papers_dir_by_id(target_pid)
-    old_path = os.path.join(papers_dir, old_fname)
-    new_path = os.path.join(papers_dir, new_fname)
 
-    # 1. 物理重命名
-    if os.path.exists(old_path):
+    clean_disp_new = get_clean_display_title(new_fname)
+    clean_disp_old = get_clean_display_title(old_fname)
+    phys_new_name = get_physical_pdf_filename(clean_disp_new)
+
+    # 1. 查找旧文件对应的物理文件路径
+    old_phys_path = None
+    for cand in [old_fname, get_physical_pdf_filename(old_fname), clean_disp_old]:
+        cand_p = os.path.join(papers_dir, cand)
+        if os.path.exists(cand_p) and os.path.isfile(cand_p):
+            old_phys_path = cand_p
+            break
+
+    # 若尚未通过名字找到，尝试通过注册表匹配
+    doc_hash = ""
+    ident = resolve_paper_identity(target_pid, old_fname)
+    if ident:
+        doc_hash = ident.get("doc_hash", "")
+        if not old_phys_path and ident.get("physical_file"):
+            reg_phys_p = os.path.join(papers_dir, ident["physical_file"])
+            if os.path.exists(reg_phys_p) and os.path.isfile(reg_phys_p):
+                old_phys_path = reg_phys_p
+
+    # 2. 物理文件重命名
+    new_phys_path = os.path.join(papers_dir, phys_new_name)
+    is_physical = False
+    if old_phys_path and os.path.exists(old_phys_path):
+        is_physical = True
         try:
-            if os.path.exists(new_path) and old_path != new_path:
-                os.remove(new_path)
-            os.rename(old_path, new_path)
+            if not doc_hash:
+                doc_hash = compute_file_content_hash(old_phys_path)
+            if old_phys_path != new_phys_path:
+                if os.path.exists(new_phys_path):
+                    os.remove(new_phys_path)
+                os.rename(old_phys_path, new_phys_path)
         except Exception as e:
             print(f"⚠️ [rename_project_paper] 物理文件更名失败: {e}")
             return False
-
-    # 2. 会话中的 analyzed_files 列表替换
-    cur_files = st.session_state.get("analyzed_files", [])
-    if old_fname in cur_files:
-        st.session_state.analyzed_files = [new_fname if f == old_fname else f for f in cur_files]
     else:
-        # 如果原来不在 analyzed_files 中（如线上扩展文献），将新名称追加登记
-        st.session_state.analyzed_files.append(new_fname)
+        # 线上/虚拟来源生成规范不可变哈希
+        if not doc_hash:
+            doc_hash = compute_source_identity_hash(clean_disp_new if "pmid" in clean_disp_new.lower() else old_fname)
 
-    # 3. 实体 master_entities 中 doc_source 的全局无感替换
+    # 3. 更新文献注册表 (Paper Registry)
+    pmid_val = None
+    pmid_m = re.search(r"(?:^|[\W_])(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", clean_disp_new, re.I)
+    if pmid_m:
+        pmid_val = pmid_m.group(1)
+    elif ident and ident.get("pmid"):
+        pmid_val = ident.get("pmid")
+
+    register_or_update_paper(
+        target_pid,
+        doc_hash=doc_hash,
+        display_name=clean_disp_new,
+        physical_file=phys_new_name if is_physical else None,
+        aliases=[old_fname, clean_disp_old, get_physical_pdf_filename(old_fname), clean_disp_new, phys_new_name],
+        pmid=pmid_val,
+        source_type="pdf" if is_physical else "online_pmid"
+    )
+
+    # 4. 会话中的 analyzed_files 列表替换（使用纯净的 clean_disp_new）
+    cur_files = st.session_state.get("analyzed_files", [])
+    replaced = False
+    updated_files = []
+    old_alias_set = {old_fname, clean_disp_old, get_physical_pdf_filename(old_fname)}
+    for f in cur_files:
+        f_str = str(f).strip()
+        if f_str in old_alias_set:
+            updated_files.append(clean_disp_new)
+            replaced = True
+        else:
+            updated_files.append(f)
+    if not replaced:
+        updated_files.append(clean_disp_new)
+    st.session_state.analyzed_files = list(dict.fromkeys(updated_files))
+
+    # 5. 实体 master_entities 中 doc_source 与 doc_hash 的双锚定更新
     for ent in st.session_state.get("master_entities", []):
         ds = ent.get("doc_source", "")
-        if ds and old_fname in ds:
-            ent["doc_source"] = ds.replace(old_fname, new_fname)
+        if ds:
+            matched = False
+            for target_old in old_alias_set:
+                if target_old and target_old in ds:
+                    ds = ds.replace(target_old, clean_disp_new)
+                    matched = True
+            if matched:
+                ent["doc_source"] = ds
+                ent["doc_hash"] = doc_hash
+            elif ent.get("doc_hash") == doc_hash:
+                ent["doc_source"] = clean_disp_new
 
-    # 4. 关系 master_relations 中 doc_source 与 reason 证据的全局无感替换
+    # 6. 关系 master_relations 中 doc_source、doc_hash 与 reason 证据的全局替换
     for rel in st.session_state.get("master_relations", []):
         ds = rel.get("doc_source", "")
-        if ds and old_fname in ds:
-            rel["doc_source"] = ds.replace(old_fname, new_fname)
-            if "reason" in rel and old_fname in rel.get("reason", ""):
-                rel["reason"] = rel["reason"].replace(old_fname, new_fname)
+        if ds:
+            matched = False
+            for target_old in old_alias_set:
+                if target_old and target_old in ds:
+                    ds = ds.replace(target_old, clean_disp_new)
+                    matched = True
+            if matched:
+                rel["doc_source"] = ds
+                rel["doc_hash"] = doc_hash
+            elif rel.get("doc_hash") == doc_hash:
+                rel["doc_source"] = clean_disp_new
 
-    # 5. 持久化落盘到 project.biokg
+        if "reason" in rel:
+            r = rel.get("reason", "")
+            for target_old in old_alias_set:
+                if target_old and target_old in r:
+                    r = r.replace(f"[源自: {target_old}]", f"[源自: {clean_disp_new}]").replace(target_old, clean_disp_new)
+            rel["reason"] = r
+
+    # 7. 持久化落盘到 project.biokg
     save_local_vault()
     return True
 
 
+def reconcile_loaded_vault(target_pid: str, loaded_data: dict) -> dict:
+    """
+    对载入的记忆库数据执行文献身份自愈对齐：
+    1. 导入/合并外部记忆库自带的 paper_registry；
+    2. 遍历 analyzed_files、entities、relations，将曾用名/旧文件名自动解析升级为现行展示名（无.pdf），并锚定 doc_hash；
+    3. 同步补全物理文献。
+    """
+    registry = load_project_paper_registry(target_pid)
+    incoming_reg = loaded_data.get("paper_registry", {})
+    if isinstance(incoming_reg, dict) and "papers" in incoming_reg:
+        for h, item in incoming_reg.get("papers", {}).items():
+            if h not in registry["papers"]:
+                registry["papers"][h] = item
+            else:
+                combined_aliases = list(dict.fromkeys(registry["papers"][h].get("aliases", []) + item.get("aliases", [])))
+                registry["papers"][h]["aliases"] = combined_aliases
+        save_project_paper_registry(target_pid, registry)
+
+    alias_to_info = {}
+    for h, item in registry.get("papers", {}).items():
+        disp = item.get("display_name", "")
+        for a in item.get("aliases", []):
+            if a:
+                alias_to_info[a] = (disp, h)
+                alias_to_info[get_clean_display_title(a)] = (disp, h)
+        if disp:
+            alias_to_info[disp] = (disp, h)
+        phys = item.get("physical_file")
+        if phys:
+            alias_to_info[phys] = (disp, h)
+
+    # 更新 analyzed_files
+    new_analyzed = []
+    for f in loaded_data.get("analyzed_files", []):
+        f_clean = str(f).strip()
+        if f_clean in alias_to_info:
+            new_analyzed.append(alias_to_info[f_clean][0])
+        elif get_clean_display_title(f_clean) in alias_to_info:
+            new_analyzed.append(alias_to_info[get_clean_display_title(f_clean)][0])
+        else:
+            new_analyzed.append(get_clean_display_title(f_clean) if not is_pmid_or_virtual_source(f_clean) else f_clean)
+    loaded_data["analyzed_files"] = list(dict.fromkeys(new_analyzed))
+
+    # 更新 entities
+    for ent in loaded_data.get("entities", []):
+        ds = ent.get("doc_source", "")
+        if ds:
+            matched_disp, matched_hash = None, None
+            if ds in alias_to_info:
+                matched_disp, matched_hash = alias_to_info[ds]
+            elif get_clean_display_title(ds) in alias_to_info:
+                matched_disp, matched_hash = alias_to_info[get_clean_display_title(ds)]
+            else:
+                for a, (d, h) in alias_to_info.items():
+                    if a and a in ds:
+                        ds = ds.replace(a, d)
+                        matched_hash = h
+            if matched_disp:
+                ent["doc_source"] = matched_disp
+            if matched_hash:
+                ent["doc_hash"] = matched_hash
+
+    # 更新 relations
+    for rel in loaded_data.get("relations", []):
+        ds = rel.get("doc_source", "")
+        if ds:
+            matched_disp, matched_hash = None, None
+            if ds in alias_to_info:
+                matched_disp, matched_hash = alias_to_info[ds]
+            elif get_clean_display_title(ds) in alias_to_info:
+                matched_disp, matched_hash = alias_to_info[get_clean_display_title(ds)]
+            else:
+                for a, (d, h) in alias_to_info.items():
+                    if a and a in ds:
+                        ds = ds.replace(a, d)
+                        matched_hash = h
+            if matched_disp:
+                rel["doc_source"] = matched_disp
+            if matched_hash:
+                rel["doc_hash"] = matched_hash
+
+        if "reason" in rel:
+            r = rel.get("reason", "")
+            for a, (d, h) in alias_to_info.items():
+                if a and a in r:
+                    r = r.replace(f"[源自: {a}]", f"[源自: {d}]")
+            rel["reason"] = r
+
+    return loaded_data
+
+
 def save_local_vault():
-    """将当前记忆库（实体、关系、历史文献、工程 ID 与名称）原地保存到专属工程归档 projects/{project_id}/project.biokg（单一真实源）"""
+    """将当前记忆库（实体、关系、历史文献、文献注册表、工程 ID 与名称）原地保存到专属工程归档 projects/{project_id}/project.biokg（单一真实源）"""
     proj_id = get_current_project_id()
     proj_name = get_current_project_name()
+    registry = load_project_paper_registry(proj_id)
     data = {
-        "version": "1.0",
+        "version": "2.0",
         "project_id": proj_id,
         "project_name": proj_name,
         "entities": st.session_state.get("master_entities", []),
         "relations": st.session_state.get("master_relations", []),
-        "analyzed_files": st.session_state.get("analyzed_files", [])
+        "analyzed_files": st.session_state.get("analyzed_files", []),
+        "paper_registry": registry
     }
     # 1. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg（唯一真实数据源）
     try:
@@ -696,6 +925,7 @@ def switch_to_project(proj_id: str) -> bool:
     try:
         with open(pkg_file, "r", encoding="utf-8") as f:
             data = json.load(f)
+        data = reconcile_loaded_vault(proj_id, data)
         pname = data.get("project_name", proj_id)
         st.session_state.current_project_id = proj_id
         st.session_state.current_project_name = pname
@@ -705,7 +935,7 @@ def switch_to_project(proj_id: str) -> bool:
 
         # 检查专属 papers 目录中已有文献并补充
         papers_dir = os.path.join(proj_dir, "papers")
-        existing_in_target = [f for f in os.listdir(papers_dir) if os.path.isfile(os.path.join(papers_dir, f))] if os.path.exists(papers_dir) else []
+        existing_in_target = [get_clean_display_title(f) for f in os.listdir(papers_dir) if os.path.isfile(os.path.join(papers_dir, f))] if os.path.exists(papers_dir) else []
         st.session_state.analyzed_files = list(dict.fromkeys(loaded_files + existing_in_target))
 
         # 🛡️ 步骤 2：严格重置画布，目标工程有数据则重新生成，若为空白工程则彻底销毁画布与残留
@@ -748,6 +978,7 @@ def load_local_vault():
         try:
             with open(pkg_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
+            data = reconcile_loaded_vault(proj_id, data)
             # 无论实体是否为空，优先恢复持久化的工程 ID 与课题名称，防止意外生成新工程
             st.session_state.current_project_id = data.get("project_id", proj_id)
             pname = data.get("project_name", "默认课题")
@@ -1659,17 +1890,28 @@ with left_col:
                                 new_entities = agent.extract_entities_with_reflection(abs_text,
                                                                                       use_reflection=current_use_ref,
                                                                                       entity_lang=current_lang)
+                                pmid_tag = f"PubMed:{pmid}"
+                                v_hash = f"pmid:{pmid}"
+                                register_or_update_paper(
+                                    get_current_project_id(),
+                                    doc_hash=v_hash,
+                                    display_name=pmid_tag,
+                                    aliases=[pmid_tag, str(pmid)],
+                                    pmid=str(pmid),
+                                    source_type="online_pmid"
+                                )
                                 for ent in new_entities:
-                                    ent["doc_source"] = f"PubMed:{pmid}"
+                                    ent["doc_source"] = pmid_tag
+                                    ent["doc_hash"] = v_hash
                                     st.session_state.master_entities.append(ent)
 
-                                pmid_tag = f"PubMed:{pmid}"
                                 if pmid_tag not in st.session_state.analyzed_files:
                                     st.session_state.analyzed_files.append(pmid_tag)
 
                                 new_relations = agent.extract_relations(abs_text, st.session_state.master_entities)
                                 for rel in new_relations:
-                                    rel["doc_source"] = f"PubMed:{pmid}"
+                                    rel["doc_source"] = pmid_tag
+                                    rel["doc_hash"] = v_hash
                                     rel["weight"] = 1
                                     st.session_state.master_relations.append(rel)
 
@@ -1799,12 +2041,13 @@ with left_col:
 if uploaded_file and start_button:
     file_bytes = uploaded_file.getvalue()
     save_analyzed_paper(uploaded_file.name, file_bytes)
+    disp_upload_name = get_clean_display_title(uploaded_file.name)
     if append_mode:
-        if uploaded_file.name not in st.session_state.analyzed_files:
-            st.session_state.analyzed_files.append(uploaded_file.name)
+        if disp_upload_name not in st.session_state.analyzed_files:
+            st.session_state.analyzed_files.append(disp_upload_name)
     else:
         # 非追加模式：仅将当前会话分析列表重置为该文件，不删除磁盘上的历史物理文件
-        st.session_state.analyzed_files = [uploaded_file.name]
+        st.session_state.analyzed_files = [disp_upload_name]
 
 with st.sidebar:
     if append_mode:
@@ -1822,7 +2065,7 @@ with st.sidebar:
                     st.download_button(
                         label=f"📄 {fname}",
                         data=f_bytes,
-                        file_name=fname,
+                        file_name=os.path.basename(fpath),
                         mime="application/pdf",
                         key=f"history_{fname}",
                         use_container_width=True
@@ -1969,6 +2212,9 @@ with right_col:
             if st.button(t("btn_confirm_load"), type="primary", use_container_width=True, help=t("help_confirm_load")):
                 # 🔄 直接替换覆盖当前活动工程
                 matched_pid = get_current_project_id()
+                # 🔄 智能文献映射与哈希自愈
+                loaded_data = reconcile_loaded_vault(matched_pid, loaded_data)
+
                 st.session_state.current_project_name = stored_pname
 
                 st.session_state.master_entities = loaded_data.get("entities", [])
@@ -1979,7 +2225,7 @@ with right_col:
                 target_papers_dir = get_project_papers_dir_by_id(matched_pid)
                 os.makedirs(target_papers_dir, exist_ok=True)
                 for fname in loaded_files:
-                    target_file_path = os.path.join(target_papers_dir, fname)
+                    target_file_path = os.path.join(target_papers_dir, get_physical_pdf_filename(fname))
                     if not os.path.exists(target_file_path):
                         found_path = find_project_paper(fname)
                         if found_path and os.path.exists(found_path):
@@ -1988,7 +2234,7 @@ with right_col:
                             except Exception:
                                 pass
 
-                existing_in_target = [f for f in os.listdir(target_papers_dir) if os.path.isfile(os.path.join(target_papers_dir, f))] if os.path.exists(target_papers_dir) else []
+                existing_in_target = [get_clean_display_title(f) for f in os.listdir(target_papers_dir) if os.path.isfile(os.path.join(target_papers_dir, f))] if os.path.exists(target_papers_dir) else []
                 merged_files = list(dict.fromkeys(loaded_files + existing_in_target))
                 st.session_state.analyzed_files = merged_files
 
@@ -2030,6 +2276,7 @@ with right_col:
 
     # 1. 清理当前工程孤儿文献 (Orphaned Files Cleanup)
     cur_papers_dir = get_current_papers_dir()
+    cur_pid = get_current_project_id()
     all_cur_files = [f for f in os.listdir(cur_papers_dir) if os.path.isfile(os.path.join(cur_papers_dir, f))] if os.path.exists(cur_papers_dir) else []
 
     referenced_sources = set()
@@ -2043,8 +2290,10 @@ with right_col:
             referenced_sources.add(str(ds).strip())
 
     def is_file_referenced(fname):
+        ident = resolve_paper_identity(cur_pid, fname)
+        disp = ident.get("display_name") if ident else get_clean_display_title(fname)
         for ref in referenced_sources:
-            if fname in ref or ref in fname:
+            if fname in ref or ref in fname or (disp and (disp in ref or ref in disp)):
                 return True
         return False
 
@@ -2541,21 +2790,14 @@ if st.session_state.show_results and st.session_state.html_data:
                             if not new_source.strip():
                                 st.error(t("err_empty_name"))
                             elif new_source.strip() != old_source:
-                                new_src_clean = new_source.strip()
-                                for ent in st.session_state.master_entities:
-                                    if ent.get("doc_source") == old_source: ent["doc_source"] = new_src_clean
-                                for rel in st.session_state.master_relations:
-                                    if rel.get("doc_source") == old_source:
-                                        rel["doc_source"] = new_src_clean
-                                        if "reason" in rel and old_source in rel["reason"]:
-                                            rel["reason"] = rel["reason"].replace(f"[源自: {old_source}]",
-                                                                                  f"[源自: {new_src_clean}]")
-                                if old_source in st.session_state.analyzed_files:
-                                    idx = st.session_state.analyzed_files.index(old_source)
-                                    st.session_state.analyzed_files[idx] = new_src_clean
-                                st.toast(t("toast_rename_success").format(old=old_source), icon="🎉")
-                                redraw_and_update()
-                                st.rerun()
+                                new_src_clean = get_clean_display_title(new_source.strip())
+                                ok = rename_project_paper(old_source, new_src_clean)
+                                if ok:
+                                    st.toast(t("toast_rename_success").format(old=old_source, new=new_src_clean), icon="🎉")
+                                    redraw_and_update()
+                                    st.rerun()
+                                else:
+                                    st.error("更名失败，请检查文件系统或重试。")
 
             with col2:
                 st.markdown(t("quick_add_title"))
@@ -3379,16 +3621,16 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                 if not title:
                                     failed_list.append((target_name, t("err_title_unrecognized")))
                                     continue
-                                new_name = f"{title}.pdf"
+                                new_name = get_clean_display_title(title)
                             else:
                                 # 线上 PMID 或其他出处来源
                                 title, pmid_tag, method = extract_paper_title_and_pmid(target_name, agent=agent)
                                 if not title:
                                     failed_list.append((target_name, t("err_title_unrecognized")))
                                     continue
-                                new_name = title
+                                new_name = get_clean_display_title(title)
 
-                            if new_name == target_name:
+                            if new_name == get_clean_display_title(target_name):
                                 skipped_list.append(target_name)
                             else:
                                 ok = rename_project_paper(target_name, new_name, cur_pid)
@@ -3582,17 +3824,28 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                 new_entities = agent.extract_entities_with_reflection(abstract,
                                                                                       use_reflection=use_reflection,
                                                                                       entity_lang=entity_language)
-                                for ent in new_entities:
-                                    ent["doc_source"] = f"PubMed:{pmid}"
-
                                 pmid_tag = f"PubMed:{pmid}"
+                                v_hash = f"pmid:{pmid}"
+                                register_or_update_paper(
+                                    get_current_project_id(),
+                                    doc_hash=v_hash,
+                                    display_name=pmid_tag,
+                                    aliases=[pmid_tag, str(pmid)],
+                                    pmid=str(pmid),
+                                    source_type="online_pmid"
+                                )
+                                for ent in new_entities:
+                                    ent["doc_source"] = pmid_tag
+                                    ent["doc_hash"] = v_hash
+
                                 if pmid_tag not in st.session_state.analyzed_files:
                                     st.session_state.analyzed_files.append(pmid_tag)
 
                                 combined_entities_dict = st.session_state.master_entities + new_entities
                                 new_relations = agent.extract_relations(abstract, combined_entities_dict)
                                 for rel in new_relations:
-                                    rel["doc_source"] = f"PubMed:{pmid}"
+                                    rel["doc_source"] = pmid_tag
+                                    rel["doc_hash"] = v_hash
                                     rel["weight"] = 1
 
                                 alignment_map = agent.align_global_entities(
