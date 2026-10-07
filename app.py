@@ -12,7 +12,7 @@ import json
 import pandas as pd
 import uuid
 import re
-from typing import Optional
+from typing import Optional, List
 
 CONFIG_FILE = ".bio_graph_config.json"
 
@@ -425,6 +425,110 @@ def find_project_paper(fname: str) -> Optional[str]:
     return None
 
 
+def is_pmid_or_virtual_source(source: str) -> bool:
+    """利用正则精准识别是否属于线上 PubMed/PMID 摘要来源或系统虚拟标记，完全放行不报缺失"""
+    if not source:
+        return True
+    s = str(source).strip()
+    # 1. 匹配标准 PubMed/PMID 前缀及变体 (如 PubMed:39218274, PMID: 12345678, pmid:12345678, PubMed_xxx)
+    if re.search(r'^(?:pubmed|pmid)\s*[:#\-_\s]?\s*\d+', s, re.IGNORECASE):
+        return True
+    # 2. 单词边界包含 pubmed 或 pmid 的标识
+    if re.search(r'\b(?:pubmed|pmid)\b', s, re.IGNORECASE):
+        return True
+    # 3. 纯 6-9 位数字（常用于直接填写的 PMID）
+    if re.match(r'^\d{6,9}$', s):
+        return True
+    # 4. 系统内置或手动虚拟标记
+    virtual_tags = {
+        "AI 分析", "未知", "手动添加", "手动修改", "手动拆分",
+        "AI Analysis", "Unknown", "Manual Add", "Manual Edit", "Manual Split",
+        "无", "None", ""
+    }
+    if s in virtual_tags:
+        return True
+    return False
+
+
+def get_expected_papers_for_project(proj_id: str, data: Optional[dict] = None) -> List[str]:
+    """获取指定工程期望包含的物理文献文件名列表（已排除 PMID 和系统虚拟来源）"""
+    if data is None:
+        pkg_file = os.path.join(get_project_dir_by_id(proj_id), "project.biokg")
+        if not os.path.exists(pkg_file):
+            return []
+        try:
+            with open(pkg_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            return []
+
+    expected_files = set()
+
+    # 1. 来自 analyzed_files 列表
+    for f in data.get("analyzed_files", []):
+        f_clean = str(f).strip()
+        if f_clean and not is_pmid_or_virtual_source(f_clean):
+            expected_files.add(f_clean)
+
+    # 2. 来自 entities 与 relations 中的 doc_source 引用
+    for item in data.get("entities", []) + data.get("relations", []):
+        ds = item.get("doc_source", "")
+        if ds:
+            for part in str(ds).split("|"):
+                part_clean = part.strip()
+                if part_clean and not is_pmid_or_virtual_source(part_clean):
+                    if "." in part_clean or part_clean in expected_files:
+                        expected_files.add(part_clean)
+
+    return sorted(list(expected_files))
+
+
+def get_project_missing_papers(proj_id: str, data: Optional[dict] = None) -> List[str]:
+    """检测指定工程中缺失的实体文献（在本地 papers 目录中不存在且无法跨工程检索到的文件）"""
+    expected = get_expected_papers_for_project(proj_id, data)
+    if not expected:
+        return []
+
+    p_papers_dir = get_project_papers_dir_by_id(proj_id)
+    missing = []
+    for fname in expected:
+        local_path = os.path.join(p_papers_dir, fname)
+        if not os.path.exists(local_path):
+            # 尝试跨工程检索自愈
+            healed = False
+            if os.path.exists(PROJECTS_ROOT_DIR):
+                for pid in os.listdir(PROJECTS_ROOT_DIR):
+                    alt_path = os.path.join(PROJECTS_ROOT_DIR, pid, "papers", fname)
+                    if os.path.exists(alt_path) and os.path.isfile(alt_path):
+                        try:
+                            shutil.copy2(alt_path, local_path)
+                            healed = True
+                            break
+                        except Exception:
+                            healed = True
+                            break
+            if not healed:
+                missing.append(fname)
+
+    return missing
+
+
+def save_replenished_paper(target_fname: str, file_bytes: bytes):
+    """补齐缺失文献：将上传的数据写入当前工程 papers 目录并同步更新记忆库"""
+    target_dir = get_current_papers_dir()
+    os.makedirs(target_dir, exist_ok=True)
+    fpath = os.path.join(target_dir, target_fname)
+    with open(fpath, "wb") as f:
+        f.write(file_bytes)
+
+    if "analyzed_files" not in st.session_state:
+        st.session_state.analyzed_files = []
+    if target_fname not in st.session_state.analyzed_files:
+        st.session_state.analyzed_files.append(target_fname)
+
+    save_local_vault()
+
+
 def find_project_by_id_or_name(proj_id: str, proj_name: str) -> str:
     """根据 project_id 或 project_name 在本地 projects/ 目录中检索已有的工程目录 ID"""
     if proj_id and os.path.exists(os.path.join(PROJECTS_ROOT_DIR, proj_id)):
@@ -813,6 +917,11 @@ UI_TEXT = {
     "btn_confirm_del": {"zh": "确认彻底删除", "en": "Confirm Delete"},
     "toast_proj_deleted": {"zh": "工程 {name} 已彻底删除", "en": "Project {name} permanently deleted"},
     "toast_proj_switched": {"zh": "已切换到工程: {name}", "en": "Switched to project: {name}"},
+    "badge_missing_docs": {"zh": "缺失 {count} 篇文献", "en": "Missing {count} papers"},
+    "missing_docs_alert": {"zh": "⚠️ 当前课题【{name}】检测到缺失 {count} 篇本地文献，可在此便捷补齐：", "en": "⚠️ Project [{name}] is missing {count} local paper(s). You can replenish them here:"},
+    "lbl_select_missing_doc": {"zh": "📑 选择需要补全的缺失文献", "en": "📑 Select Missing Paper to Replenish"},
+    "lbl_upload_replenish_doc": {"zh": "📤 上传对应文献文件 (PDF)", "en": "📤 Upload Corresponding Paper (PDF)"},
+    "toast_replenish_success": {"zh": "✅ 成功补齐文献【{fname}】！文件已归档至当前工程。", "en": "✅ Successfully replenished paper [{fname}]! Archived to project."},
     # 核心引擎触发区 (图谱生成、洗树、融合、渲染)
     "err_missing_api_key": {"zh": "请先在左侧输入 API Key！", "en": "Please enter API Key on the left first!"},
     "msg_parsing_pages": {"zh": "🧠 智能体正在解析第 {start} 到 {end} 页...", "en": "🧠 Agent is parsing pages {start} to {end}..."},
@@ -1647,7 +1756,10 @@ with st.sidebar:
                         use_container_width=True
                     )
                 else:
-                    st.caption(f"📄 {fname} ({t('doc_file_missing')})")
+                    if is_pmid_or_virtual_source(fname):
+                        st.caption(f"🌐 {fname}")
+                    else:
+                        st.caption(f"📄 {fname} ({t('doc_file_missing')})")
 
 # --- 右侧高清预览栏 ---
 with right_col:
@@ -1711,6 +1823,31 @@ with right_col:
         on_change=on_project_name_change,
         help=t("project_name_help")
     )
+
+    # 🔍 检测当前活动工程是否存在物理文献缺失，若有则提供便捷补全组件
+    cur_missing = get_project_missing_papers(get_current_project_id())
+    if cur_missing:
+        st.warning(t("missing_docs_alert").format(name=curr_proj_name, count=len(cur_missing)))
+        with st.container():
+            col_sel, col_up = st.columns([1, 1])
+            with col_sel:
+                target_missing_file = st.selectbox(
+                    t("lbl_select_missing_doc"),
+                    cur_missing,
+                    key="select_missing_doc_replenish"
+                )
+            with col_up:
+                replenish_nonce = st.session_state.get("replenish_nonce", 0)
+                replenish_uploaded = st.file_uploader(
+                    t("lbl_upload_replenish_doc"),
+                    type=["pdf"],
+                    key=f"replenish_uploader_{target_missing_file}_{replenish_nonce}"
+                )
+            if replenish_uploaded is not None:
+                save_replenished_paper(target_missing_file, replenish_uploaded.getvalue())
+                st.session_state["replenish_nonce"] = replenish_nonce + 1
+                st.toast(t("toast_replenish_success").format(fname=target_missing_file), icon="🎉")
+                st.rerun()
 
     col_btn1, col_btn2 = st.columns(2)
 
@@ -1925,17 +2062,22 @@ with right_col:
                 size_mb = total_size / (1024 * 1024)
 
                 is_active = (proj_id == cur_pid)
+                p_missing = get_project_missing_papers(proj_id)
                 col_pname, col_pact = st.columns([7, 3])
                 with col_pname:
                     active_badge = f" `[{t('badge_current')}]`" if is_active else ""
-                    st.markdown(f"**📁 {p_display_name}**{active_badge}<br><small style='color:gray;'>ID: <code>{proj_id}</code> | {len(p_papers)} {t('unit_papers')} | {size_mb:.2f} MB</small>", unsafe_allow_html=True)
+                    missing_badge = f" <span style='color:#e67e22;font-weight:bold;'>⚠️ [{t('badge_missing_docs').format(count=len(p_missing))}]</span>" if p_missing else ""
+                    st.markdown(f"**📁 {p_display_name}**{active_badge}{missing_badge}<br><small style='color:gray;'>ID: <code>{proj_id}</code> | {len(p_papers)} {t('unit_papers')} | {size_mb:.2f} MB</small>", unsafe_allow_html=True)
                 with col_pact:
                     if not is_active:
                         c_sw, c_del = st.columns(2)
                         with c_sw:
                             if st.button("🚀", key=f"switch_proj_{proj_id}", help=t("btn_switch_proj_help").format(name=p_display_name)):
                                 if switch_to_project(proj_id):
-                                    st.toast(t("toast_proj_switched").format(name=p_display_name), icon="🚀")
+                                    if p_missing:
+                                        st.toast(f"{t('toast_proj_switched').format(name=p_display_name)} (⚠️ {t('badge_missing_docs').format(count=len(p_missing))})", icon="🚀")
+                                    else:
+                                        st.toast(t("toast_proj_switched").format(name=p_display_name), icon="🚀")
                                     st.rerun()
                         with c_del:
                             if st.button("🗑️", key=f"del_proj_{proj_id}", help=t("btn_del_proj_help").format(name=p_display_name)):
