@@ -30,14 +30,12 @@ __pycache__/
 .env
 
 lib/
-.history_docs/
 .expanded_logs/
 .doc/
 
 # 本地运行时与辅助配置
 .agents/
 .bio_graph_config.json
-.current_project.biokg
 start_wsl.bat
 
 # 项目工程本地归档库与记忆库文件

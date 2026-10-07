@@ -12,6 +12,7 @@ import json
 import pandas as pd
 import uuid
 import re
+from typing import Optional
 
 CONFIG_FILE = ".bio_graph_config.json"
 
@@ -348,8 +349,6 @@ def resolve_vision_model_id(main_model_id, vision_choice, vision_suffix):
 
 PROJECTS_ROOT_DIR = "projects"
 os.makedirs(PROJECTS_ROOT_DIR, exist_ok=True)
-HISTORY_DIR = ".history_docs"
-os.makedirs(HISTORY_DIR, exist_ok=True)
 
 
 def generate_project_id() -> str:
@@ -406,6 +405,26 @@ def get_current_papers_dir() -> str:
     return get_project_papers_dir_by_id(get_current_project_id())
 
 
+def find_project_paper(fname: str) -> Optional[str]:
+    """在当前工程及所有本地工程的 papers/ 目录中查找文献，如跨工程命中则自动自愈拷贝"""
+    if not fname:
+        return None
+    cur_path = os.path.join(get_current_papers_dir(), fname)
+    if os.path.exists(cur_path):
+        return cur_path
+    # 跨工程检索与自动自愈补齐
+    if os.path.exists(PROJECTS_ROOT_DIR):
+        for pid in os.listdir(PROJECTS_ROOT_DIR):
+            alt_path = os.path.join(PROJECTS_ROOT_DIR, pid, "papers", fname)
+            if os.path.exists(alt_path) and os.path.isfile(alt_path):
+                try:
+                    shutil.copy2(alt_path, cur_path)
+                    return cur_path
+                except Exception:
+                    return alt_path
+    return None
+
+
 def find_project_by_id_or_name(proj_id: str, proj_name: str) -> str:
     """根据 project_id 或 project_name 在本地 projects/ 目录中检索已有的工程目录 ID"""
     if proj_id and os.path.exists(os.path.join(PROJECTS_ROOT_DIR, proj_id)):
@@ -425,18 +444,11 @@ def find_project_by_id_or_name(proj_id: str, proj_name: str) -> str:
 
 
 def save_analyzed_paper(file_name: str, file_bytes: bytes):
-    """保存解析的论文到当前工程的 papers 目录，并在 .history_docs 建立兼容副本"""
+    """保存解析的论文到当前工程的 papers 目录"""
     target_dir = get_current_papers_dir()
     fpath = os.path.join(target_dir, file_name)
     with open(fpath, "wb") as f:
         f.write(file_bytes)
-    # 兼容历史老版本目录
-    hist_path = os.path.join(HISTORY_DIR, file_name)
-    try:
-        with open(hist_path, "wb") as f:
-            f.write(file_bytes)
-    except Exception:
-        pass
 
 
 def save_local_vault():
@@ -772,9 +784,13 @@ UI_TEXT = {
     "btn_new_project": {"zh": "✨ 新建空白工程", "en": "✨ New Blank Project"},
     "btn_export_project": {"zh": "📤 导出工程 (.biokg)", "en": "📤 Export Project (.biokg)"},
     "toast_export_empty": {"zh": "⚠️ 当前记忆库为空，请先上传并解析文献！", "en": "⚠️ Memory bank is empty. Please upload and parse documents first!"},
-    "warn_new_project_confirm": {"zh": "⚠️ **危险操作**：这将清空当前所有图谱与历史记录！（建议先导出保存）\n\n您确定要从零开始吗？", "en": "⚠️ **DANGER**: This will clear all current graphs and history! (Suggest exporting first)\n\nAre you sure you want to start from scratch?"},
-    "btn_confirm_clear": {"zh": "🔴 确定清空", "en": "🔴 Confirm Clear"},
+    "info_new_project_confirm": {
+        "zh": "💡 **提示**：当前课题图谱已自动归档保存。新建后，您仍可在下方的「本地历史工程库」中随时切回访问当前工程；若您希望完全清除，请在历史工程库管理中操作。\n\n确认新建空白课题工程吗？",
+        "en": "💡 **Notice**: The current project graph has been automatically archived. After creating a new project, you can still switch back to it anytime in 'Historical Projects' below. To delete it permanently, please manage it in Historical Projects.\n\nConfirm creating a new blank project?"
+    },
+    "btn_confirm_new_project": {"zh": "✨ 确认新建", "en": "✨ Confirm Create"},
     "btn_cancel": {"zh": "取消", "en": "Cancel"},
+    "doc_file_missing": {"zh": "未在本地文件库中找到源文件", "en": "Source file not found in local vault"},
     "upload_project": {"zh": "📥 载入历史工程文件 (.biokg / .json)", "en": "📥 Load History Project (.biokg / .json)"},
     "btn_confirm_load": {"zh": "🚀 确认载入该工程", "en": "🚀 Confirm Load Project"},
     "err_load_project": {"zh": "解析工程文件失败，请检查文件格式是否正确。报错信息: {e}", "en": "Failed to parse project file. Check format. Error: {e}"},
@@ -1614,12 +1630,9 @@ with st.sidebar:
         if not st.session_state.analyzed_files:
             st.info(t("history_no_docs"))
         else:
-            cur_papers_dir = get_current_papers_dir()
             for fname in st.session_state.analyzed_files:
-                fpath = os.path.join(cur_papers_dir, fname)
-                if not os.path.exists(fpath):
-                    fpath = os.path.join(HISTORY_DIR, fname)
-                if os.path.exists(fpath):
+                fpath = find_project_paper(fname)
+                if fpath and os.path.exists(fpath):
                     with open(fpath, "rb") as f:
                         f_bytes = f.read()
                     st.download_button(
@@ -1630,6 +1643,8 @@ with st.sidebar:
                         key=f"history_{fname}",
                         use_container_width=True
                     )
+                else:
+                    st.caption(f"📄 {fname} ({t('doc_file_missing')})")
 
 # --- 右侧高清预览栏 ---
 with right_col:
@@ -1707,10 +1722,10 @@ with right_col:
                 st.toast(t("toast_export_empty"), icon="🈳")
 
     if st.session_state.get("show_new_confirm", False):
-        st.warning(t("warn_new_project_confirm"))
+        st.info(t("info_new_project_confirm"))
         col_y, col_n = st.columns(2)
         with col_y:
-            if st.button(t("btn_confirm_clear"), use_container_width=True):
+            if st.button(t("btn_confirm_new_project"), use_container_width=True):
                 # 🛡️ 步骤 1：新建空白工程前，先自动固化当前工程，避免未保存修改丢失
                 save_local_vault()
 
@@ -1775,10 +1790,10 @@ with right_col:
                 for fname in loaded_files:
                     target_file_path = os.path.join(target_papers_dir, fname)
                     if not os.path.exists(target_file_path):
-                        legacy_path = os.path.join(HISTORY_DIR, fname)
-                        if os.path.exists(legacy_path):
+                        found_path = find_project_paper(fname)
+                        if found_path and os.path.exists(found_path):
                             try:
-                                shutil.copy2(legacy_path, target_file_path)
+                                shutil.copy2(found_path, target_file_path)
                             except Exception:
                                 pass
 
