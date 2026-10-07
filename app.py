@@ -1161,19 +1161,19 @@ UI_TEXT = {
     # 🏷️ 智能文献名称识别与规范化 (Smart Literature Renaming) 模块
     "paper_rename_title": {"zh": "🏷️ 智能文献名称识别与规范化", "en": "🏷️ Smart Paper Title Identification & Renaming"},
     "paper_rename_info": {
-        "zh": "💡 自动扫描文献前 1~3 页，结合 PubMed 官方检索与大模型深度审校，将原始代码/数字文件名规范化重命名为学术大标题，并同步更新工程目录与图谱引用。",
-        "en": "💡 Scan pages 1-3 of papers, integrating PubMed search and LLM review to standardize filenames to academic titles and update project references."
+        "zh": "💡 双阶段极简Token识别：优先容错正则匹配首页 DOI/PMID 检索 PubMed 官方标题（0 Token），无DOI时由模型极简快提，统一交由大模型清洗版权与期刊杂质，并持久展示变更看板。",
+        "en": "💡 Two-stage ultra-token-efficient renaming: DOI/PMID regex-first PubMed lookup (0 Token), fallback to fast LLM extraction, unified LLM cleaning, and persistent change reporting."
     },
     "no_papers_to_rename": {"zh": "当前工程暂无本地物理文献可供重命名。", "en": "No local papers available to rename in current project."},
     "rename_opt_all": {"zh": "🌟 当前工程全部文献", "en": "🌟 All Papers in Current Project"},
     "lbl_select_rename_target": {"zh": "选择重命名目标：", "en": "Select Renaming Target:"},
     "btn_start_rename": {"zh": "🏷️ 开始识别并重命名", "en": "🏷️ Start Identification & Renaming"},
-    "msg_renaming_papers": {"zh": "🧠 正在智能扫描排版、检索官方元数据并进行大模型审校...", "en": "🧠 Scanning layout, searching metadata, and performing LLM review..."},
+    "msg_renaming_papers": {"zh": "🧠 正在检索官方元数据并进行大模型统一清洗审校...", "en": "🧠 Retrieving metadata and performing unified LLM sanitization..."},
     "toast_rename_success": {"zh": "✅ 文献【{old}】已规范重命名为【{new}】", "en": "✅ Paper [{old}] renamed to [{new}]"},
     "info_rename_skipped": {"zh": "ℹ️ 共 {count} 篇文献名称已符合学术规范，跳过更新。", "en": "ℹ️ {count} paper(s) already standardized, skipped."},
     "warn_rename_failed": {"zh": "⚠️ 文献【{fname}】未能成功识别出标题（{reason}），已保留原文件名。", "en": "⚠️ Failed to identify title for [{fname}] ({reason}), kept original name."},
     "err_file_not_found": {"zh": "未在本地文件库中找到物理文件", "en": "Physical file not found in local vault"},
-    "err_title_unrecognized": {"zh": "所有识别策略（PMID检索、大模型审核、排版启发式）均未成功识别出标题", "en": "All strategies (PMID search, LLM review, layout heuristic) failed to identify title"},
+    "err_title_unrecognized": {"zh": "所有识别策略（PubMed检索、大模型快提与审校）均未成功识别出真实学术标题", "en": "All strategies (PubMed search, fast extraction, LLM review) failed to identify academic title"},
 
     # 🔍 智能拓展 (Smart Expansion) 模块
     "expansion_info": {"zh": "💡 选中图谱中的关键节点，系统将自动在 {db} 中检索前沿文献，并由 AI 提取摘要知识，自动将其延伸至当前图谱。",
@@ -3261,6 +3261,29 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
         if not cur_papers:
             st.caption(t("no_papers_to_rename"))
         else:
+            # 持久展示重命名变更详情看板（明确展示“什么换为了什么”）
+            if st.session_state.get("rename_history_report"):
+                rep = st.session_state["rename_history_report"]
+                succ = rep.get("success", [])
+                skip = rep.get("skipped", [])
+                fail = rep.get("failed", [])
+
+                if succ:
+                    report_lines = [
+                        f"- 📄 `{old_f}` ➔ 🏷️ **`{new_f}`**" + (f" *(PMID: {pmid_tag})*" if pmid_tag else "")
+                        for old_f, new_f, pmid_tag in succ
+                    ]
+                    st.success(f"🎉 **文献重命名完成（共更新 {len(succ)} 篇）：**\n\n" + "\n".join(report_lines))
+                if skip:
+                    st.info(f"ℹ️ {len(skip)} 篇文献名称已是规范学术标题，无需更名。")
+                if fail:
+                    for old_f, reason in fail:
+                        st.warning(f"⚠️ `{old_f}` 未能成功识别: {reason}")
+
+                if st.button("✖️ 清除变更提示", key="btn_clear_rename_report"):
+                    del st.session_state["rename_history_report"]
+                    st.rerun()
+
             col_rn_opt, col_rn_btn = st.columns([3, 2])
             with col_rn_opt:
                 rn_choices = [t("rename_opt_all")] + cur_papers
@@ -3291,45 +3314,47 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                     cur_pid = get_current_project_id()
                     papers_dir = get_current_papers_dir()
 
-                with st.spinner(t("msg_renaming_papers")):
-                    for fname in targets:
-                        fpath = os.path.join(papers_dir, fname)
-                        if not os.path.exists(fpath):
-                            found = find_project_paper(fname)
-                            if found and os.path.exists(found):
-                                fpath = found
-                            else:
-                                failed_list.append((fname, t("err_file_not_found")))
-                                continue
-
-                        title, pmid_tag, method = extract_paper_title_and_pmid(fpath, max_pages=3, agent=agent)
-                        if not title:
-                            failed_list.append((fname, t("err_title_unrecognized")))
-                        else:
-                            new_fname = f"{title}.pdf"
-                            if new_fname == fname:
-                                skipped_list.append(fname)
-                            else:
-                                ok = rename_project_paper(fname, new_fname, cur_pid)
-                                if ok:
-                                    success_list.append((fname, new_fname, pmid_tag))
+                    with st.spinner(t("msg_renaming_papers")):
+                        for fname in targets:
+                            fpath = os.path.join(papers_dir, fname)
+                            if not os.path.exists(fpath):
+                                found = find_project_paper(fname)
+                                if found and os.path.exists(found):
+                                    fpath = found
                                 else:
-                                    failed_list.append((fname, "磁盘文件更名写入失败"))
+                                    failed_list.append((fname, t("err_file_not_found")))
+                                    continue
 
-                if success_list:
-                    for old_f, new_f, pmid_tag in success_list:
-                        pmid_str = f" (PMID: {pmid_tag})" if pmid_tag else ""
-                        st.toast(t("toast_rename_success").format(old=old_f, new=new_f) + pmid_str, icon="🏷️")
-                if skipped_list:
-                    st.info(t("info_rename_skipped").format(count=len(skipped_list)))
-                if failed_list:
-                    for old_f, reason in failed_list:
-                        st.warning(t("warn_rename_failed").format(fname=old_f, reason=reason))
+                            title, pmid_tag, method = extract_paper_title_and_pmid(fpath, max_pages=1, agent=agent)
+                            if not title:
+                                failed_list.append((fname, t("err_title_unrecognized")))
+                            else:
+                                new_fname = f"{title}.pdf"
+                                if new_fname == fname:
+                                    skipped_list.append(fname)
+                                else:
+                                    ok = rename_project_paper(fname, new_fname, cur_pid)
+                                    if ok:
+                                        success_list.append((fname, new_fname, pmid_tag))
+                                    else:
+                                        failed_list.append((fname, "磁盘文件更名写入失败"))
 
-                if success_list:
-                    redraw_and_update()
-                    save_local_vault()
-                    st.rerun()
+                    # 持久化记录重命名看板报告
+                    st.session_state.rename_history_report = {
+                        "success": success_list,
+                        "skipped": skipped_list,
+                        "failed": failed_list
+                    }
+
+                    if success_list:
+                        for old_f, new_f, pmid_tag in success_list:
+                            pmid_str = f" (PMID: {pmid_tag})" if pmid_tag else ""
+                            st.toast(t("toast_rename_success").format(old=old_f, new=new_f) + pmid_str, icon="🏷️")
+                        redraw_and_update()
+                        save_local_vault()
+                        st.rerun()
+                    elif skipped_list or failed_list:
+                        st.rerun()
 
     # -----------------------------------------
     # 模块二：🔍 智能拓展 (Smart Expansion)

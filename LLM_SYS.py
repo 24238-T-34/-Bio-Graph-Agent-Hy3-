@@ -50,33 +50,65 @@ class BioBrainAgent:
         if last_exception:
             raise last_exception
 
-    def review_paper_title(self, raw_text: str, candidate_title: str = "") -> str:
-        """大模型审核并提取学术论文真实标题（严格剥离版权、声明与期刊杂质）"""
+    def clean_and_sanitize_title(self, candidate_title: str) -> str:
+        """极简低消耗清洗：将候选标题输入大模型，严格剔除版权/声明/期刊名/多余标点，消耗仅 ~30-50 tokens"""
+        if not candidate_title or len(candidate_title.strip()) < 4:
+            return ""
         system_prompt = (
-            "你是一个专业的生物医学学术文献元数据审校专家。"
-            "你的任务是严格审核文献标题，去除一切非标题杂质，输出最终论文的【真实学术论文大标题】。\n\n"
-            "【必须彻底剔除的非标题杂质】：\n"
-            "1. 版权与声明残留：如 'Some rights reserved', 'All rights reserved', 'Copyright © ...', 'Open Access', 'Creative Commons', 'License' 等一切出版声明。\n"
-            "2. 期刊与检索前缀/尾缀：如 'Nature Communications', 'Science (New York, N.Y.)', 'Cell Press', 'PLOS ONE', 卷期号、页码、DOI、PMID。\n"
-            "3. 类别标签与状态：如 'Research Article', 'Review', 'Brief Report', '[Retracted]', '[Article in Chinese]'。\n"
-            "4. 作者列表与所属机构：如 'John Doe et al.', 'Department of ...', 通讯作者标记等。\n\n"
-            "【输出要求】：\n"
-            "1. 保持论文真实大标题本身的学术语言（通常为英文或中文），纠正断行、多余换行或连字符割裂。\n"
-            "2. 只输出最终清洗后的论文真实标题字符串。绝不要输出任何解释、前后缀或 Markdown 引用标记。\n"
-            "3. 若文本或候选标题过于残缺无法提炼出有效标题，请只回复 'UNKNOWN'。"
+            "你是一个学术文献标题清洗专家。你的任务是严格净化给定的文献候选标题，输出最终纯净的【学术论文真实大标题】。\n\n"
+            "【严格剔除原则】：\n"
+            "1. 剔除一切版权与发布声明（如 'Some rights reserved', 'All rights reserved', 'Copyright © ...', 'Open Access' 等）。\n"
+            "2. 剔除混入的独立期刊名或出版社名（如 'Science', 'Cell', 'Nature', 'Elsevier', 'PLOS ONE' 等）。\n"
+            "3. 剔除文献类型标签（如 'Research Article', 'Review', 'Brief Report' 等）。\n"
+            "4. 剔除末尾多余的点句号、分号或引号，保持真实论文标题的大小写和专有名词连字符。\n\n"
+            "【输出约束】：只输出净化后的纯标题字符串，绝不要包含解释、标号或Markdown标记。若该候选词完全不是论文标题，请直接回复 'UNKNOWN'。"
         )
-        user_content = f"【候选标题（可能混有版权声明或期刊信息，必须严格清洗）】：\n{candidate_title}\n\n【文献前几页正文】：\n{raw_text[:3500]}"
+        user_content = f"待清洗的候选标题：\n{candidate_title.strip()}"
         try:
             res = self._ask_llm(system_prompt, user_content)
             if not res:
-                return candidate_title if candidate_title else ""
+                return candidate_title.strip()
             res = res.strip().strip('"\'`')
             if "unknown" in res.lower() or len(res) < 5:
                 return ""
             return res
         except Exception as e:
-            print(f"⚠️ [BioBrainAgent] 论文标题大模型审核失败: {e}")
-            return candidate_title if candidate_title else ""
+            print(f"⚠️ [BioBrainAgent] 标题大模型清洗受阻: {e}")
+            return candidate_title.strip()
+
+    def fast_extract_title(self, short_chunk: str) -> str:
+        """本地极简提取降级：在缺失 DOI/PMID 时，从第 1 页极短文本（250~400字符）中快速定位论文真实大标题"""
+        if not short_chunk or len(short_chunk.strip()) < 10:
+            return ""
+        system_prompt = (
+            "你是一个学术文献标题提取专家。请从给定的文献首页头部极短文本中，识别出该论文的【真实完整学术研究大标题】。\n\n"
+            "【规则】：\n"
+            "1. 绝不要提取期刊名（如 Science, Cell, Nature, PNAS）、栏目名（如 Research Article, Review）或机构作者名。\n"
+            "2. 只提取论文真实大标题本身，保留专有名词连字符，修复杂乱断行。\n"
+            "3. 只输出纯标题文本。如果文本中未找到有效标题，请只回复 'UNKNOWN'。"
+        )
+        user_content = f"文献首页头部文本片段：\n{short_chunk[:500]}"
+        try:
+            res = self._ask_llm(system_prompt, user_content)
+            if not res:
+                return ""
+            res = res.strip().strip('"\'`')
+            if "unknown" in res.lower() or len(res) < 5:
+                return ""
+            return res
+        except Exception as e:
+            print(f"⚠️ [BioBrainAgent] 本地快提大模型受阻: {e}")
+            return ""
+
+    def review_paper_title(self, raw_text: str = "", candidate_title: str = "") -> str:
+        """向后兼容接口：整合清洗与快速抽取"""
+        if candidate_title:
+            return self.clean_and_sanitize_title(candidate_title)
+        elif raw_text:
+            extracted = self.fast_extract_title(raw_text[:500])
+            if extracted:
+                return self.clean_and_sanitize_title(extracted)
+        return ""
 
     def extract_entities_with_reflection(self, text,use_reflection,entity_lang="关闭 (保持原文语言)"):
         """智能体工作流：提取包含标准名和别名的实体字典"""
