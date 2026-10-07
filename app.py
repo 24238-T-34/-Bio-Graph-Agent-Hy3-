@@ -344,48 +344,6 @@ def resolve_vision_model_id(main_model_id, vision_choice, vision_suffix):
     return base_id
 
 
-def redraw_and_update():
-    from back_logic import GraphVisualizer
-    import os
-    visualizer = GraphVisualizer()
-    html_file = ".bio_knowledge_graph.html"
-    if os.path.exists(html_file):
-        os.remove(html_file)
-
-    current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
-
-    # 🧮 抓取三大赋权引擎的开关状态
-    empower_ontology = st.session_state.get("empower_ontology", False)
-    alpha_ontology = st.session_state.get("alpha_ontology", 0.5)
-
-    # ✨ 新增：节点互相辐射开关
-    empower_node = st.session_state.get("empower_node", False)
-    beta_node = st.session_state.get("beta_node", 0.2)
-
-    # ✨ 新增：主干连线加粗开关
-    empower_edge = st.session_state.get("empower_edge", False)
-    gamma_edge = st.session_state.get("gamma_edge", 0.1)
-
-    visualizer.generate_html(
-        st.session_state.master_entities,
-        st.session_state.master_relations,
-        output_file=html_file,
-        show_shortcuts=current_show_shortcuts,
-        empower_ontology=empower_ontology,
-        alpha_ontology=alpha_ontology,
-        empower_node=empower_node,  # 传给后端
-        beta_node=beta_node,
-        empower_edge=empower_edge,  # 传给后端
-        gamma_edge=gamma_edge,
-        output_lang=st.session_state.get("ui_language", "zh")
-    )
-
-
-    if os.path.exists(html_file):
-        with open(html_file, "r", encoding="utf-8") as f:
-            st.session_state.html_data = f.read()
-
-
 LOCAL_VAULT_FILE = ".current_project.biokg"
 PROJECTS_ROOT_DIR = "projects"
 os.makedirs(PROJECTS_ROOT_DIR, exist_ok=True)
@@ -495,8 +453,66 @@ def save_local_vault():
         print(f"工程专属记忆库写入失败: {e}")
 
 
+def redraw_and_update():
+    """重新渲染网络拓扑交互图谱，并实时自动落盘同步工程专属记忆库"""
+    from back_logic import GraphVisualizer
+    import os
+    visualizer = GraphVisualizer()
+    html_file = ".bio_knowledge_graph.html"
+    if os.path.exists(html_file):
+        os.remove(html_file)
+
+    current_show_shortcuts = st.session_state.get("show_shortcuts_toggle", False)
+
+    # 🧮 抓取三大赋权引擎的开关状态
+    empower_ontology = st.session_state.get("empower_ontology", False)
+    alpha_ontology = st.session_state.get("alpha_ontology", 0.5)
+
+    # ✨ 新增：节点互相辐射开关
+    empower_node = st.session_state.get("empower_node", False)
+    beta_node = st.session_state.get("beta_node", 0.2)
+
+    # ✨ 新增：主干连线加粗开关
+    empower_edge = st.session_state.get("empower_edge", False)
+    gamma_edge = st.session_state.get("gamma_edge", 0.1)
+
+    visualizer.generate_html(
+        st.session_state.master_entities,
+        st.session_state.master_relations,
+        output_file=html_file,
+        show_shortcuts=current_show_shortcuts,
+        empower_ontology=empower_ontology,
+        alpha_ontology=alpha_ontology,
+        empower_node=empower_node,
+        beta_node=beta_node,
+        empower_edge=empower_edge,
+        gamma_edge=gamma_edge,
+        output_lang=st.session_state.get("ui_language", "zh")
+    )
+
+    if os.path.exists(html_file):
+        with open(html_file, "r", encoding="utf-8") as f:
+            st.session_state.html_data = f.read()
+
+        # 同步将生成的图谱 HTML 备份到工程专属目录
+        try:
+            cur_pid = get_current_project_id()
+            proj_dir = get_project_dir_by_id(cur_pid)
+            proj_html = os.path.join(proj_dir, "graph.html")
+            with open(proj_html, "w", encoding="utf-8") as f:
+                f.write(st.session_state.html_data)
+        except Exception:
+            pass
+
+    # 💾 核心闭环：每次图谱重绘（编辑节点/增删关系/赋权/剪枝/扩展），自动将最新图谱原子落盘到专属工程与根缓存
+    save_local_vault()
+
+
 def switch_to_project(proj_id: str) -> bool:
-    """切换当前活动工程至指定的历史工程"""
+    """切换当前活动工程至指定的历史工程（支持原子落盘与画布完全隔离切换）"""
+    # 🛡️ 步骤 1：切换前首先自动保存当前活动工程，确保未保存的改动落盘
+    save_local_vault()
+
     proj_dir = get_project_dir_by_id(proj_id)
     pkg_file = os.path.join(proj_dir, "project.biokg")
     if not os.path.exists(pkg_file):
@@ -516,10 +532,11 @@ def switch_to_project(proj_id: str) -> bool:
         existing_in_target = [f for f in os.listdir(papers_dir) if os.path.isfile(os.path.join(papers_dir, f))] if os.path.exists(papers_dir) else []
         st.session_state.analyzed_files = list(dict.fromkeys(loaded_files + existing_in_target))
 
+        # 🛡️ 步骤 2：严格重置画布，目标工程有数据则重新生成，若为空白工程则彻底销毁画布与残留
+        html_file = ".bio_knowledge_graph.html"
         if st.session_state.master_entities:
             from back_logic import GraphVisualizer
             visualizer = GraphVisualizer()
-            html_file = ".bio_knowledge_graph.html"
             if os.path.exists(html_file):
                 os.remove(html_file)
             visualizer.generate_html(
@@ -535,8 +552,10 @@ def switch_to_project(proj_id: str) -> bool:
         else:
             st.session_state.show_results = False
             st.session_state.html_data = ""
+            if os.path.exists(html_file):
+                os.remove(html_file)
 
-        # 原地覆写根缓存 .current_project.biokg，确保刷新依然保持在该工程
+        # 🛡️ 步骤 3：原地覆写根缓存 .current_project.biokg，确保页面刷新依然保持在该工程
         save_local_vault()
         return True
     except Exception as e:
@@ -558,12 +577,20 @@ def load_local_vault():
                 st.session_state["project_name_input_widget"] = pname
 
             entities = data.get("entities", [])
+            # 仅在会话未初始化实体时（冷启动或浏览器真 F5 刷新）恢复图谱
             if entities and not st.session_state.get("master_entities"):
                 st.session_state.master_entities = entities
                 st.session_state.master_relations = data.get("relations", [])
                 st.session_state.analyzed_files = data.get("analyzed_files", [])
                 st.session_state.show_results = True
                 redraw_and_update()
+            elif not entities and not st.session_state.get("master_entities"):
+                # 若磁盘持久化为空白工程且当前也是空，确保关闭图谱渲染
+                st.session_state.master_entities = []
+                st.session_state.master_relations = []
+                st.session_state.analyzed_files = data.get("analyzed_files", [])
+                st.session_state.show_results = False
+                st.session_state.html_data = ""
         except Exception as e:
             print(f"本地记忆库自动加载失败: {e}")
 
@@ -1673,10 +1700,18 @@ with right_col:
         col_y, col_n = st.columns(2)
         with col_y:
             if st.button(t("btn_confirm_clear"), use_container_width=True):
+                # 🛡️ 步骤 1：新建空白工程前，先自动固化当前工程，避免未保存修改丢失
+                save_local_vault()
+
                 st.session_state.master_entities = []
                 st.session_state.master_relations = []
                 st.session_state.analyzed_files = []
                 st.session_state.html_data = ""
+                st.session_state.show_results = False
+                html_file = ".bio_knowledge_graph.html"
+                if os.path.exists(html_file):
+                    os.remove(html_file)
+
                 # 生成全新项目 ID 与项目默认显示名，历史工程在本地目录完整安全隔离保留
                 new_pid = generate_project_id()
                 new_pname = datetime.now().strftime("课题_%Y%m%d_%H%M%S")
@@ -1707,6 +1742,9 @@ with right_col:
             loaded_data = json.load(uploaded_project)
 
             if st.button(t("btn_confirm_load"), type="primary", use_container_width=True):
+                # 🛡️ 步骤 1：载入新工程前，先自动固化当前工程，避免未保存修改丢失
+                save_local_vault()
+
                 # 从记忆库内容中提取存储的值（project_id 与 project_name），绝不依赖外部文件名
                 stored_pid = loaded_data.get("project_id", "")
                 file_stem = os.path.splitext(uploaded_project.name)[0]
@@ -1737,29 +1775,30 @@ with right_col:
                 merged_files = list(dict.fromkeys(loaded_files + existing_in_target))
                 st.session_state.analyzed_files = merged_files
 
-                from back_logic import GraphVisualizer
-
-                visualizer = GraphVisualizer()
                 html_file = ".bio_knowledge_graph.html"
+                if st.session_state.master_entities:
+                    from back_logic import GraphVisualizer
+                    visualizer = GraphVisualizer()
+                    if os.path.exists(html_file):
+                        os.remove(html_file)
+                    visualizer.generate_html(
+                        st.session_state.master_entities,
+                        st.session_state.master_relations,
+                        output_file=html_file,
+                        output_lang=st.session_state.get("ui_language", "zh")
+                    )
+                    if os.path.exists(html_file):
+                        with open(html_file, "r", encoding="utf-8") as f:
+                            st.session_state.html_data = f.read()
+                    st.session_state.show_results = True
+                else:
+                    st.session_state.show_results = False
+                    st.session_state.html_data = ""
+                    if os.path.exists(html_file):
+                        os.remove(html_file)
 
-                if os.path.exists(html_file):
-                    os.remove(html_file)
-
-                visualizer.generate_html(
-                    st.session_state.master_entities,
-                    st.session_state.master_relations,
-                    output_file=html_file,
-                    output_lang=st.session_state.get("ui_language", "zh")
-                )
-
-                if os.path.exists(html_file):
-                    with open(html_file, "r", encoding="utf-8") as f:
-                        st.session_state.html_data = f.read()
-
-                st.session_state.show_results = True
                 save_local_vault()
                 st.session_state.project_uploader_key = f"project_uploader_{uuid.uuid4().hex}"
-
                 st.rerun()
         except Exception as e:
             st.error(t("err_load_project").format(e=e))
