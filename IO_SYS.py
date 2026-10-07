@@ -408,14 +408,23 @@ class GraphVisualizer:
 # 3. 文献学术标题提取与安全命名工具集
 # =====================================================================
 def sanitize_paper_filename(name: str, max_len: int = 160) -> str:
-    """过滤操作系统非法字符并规范化学术文献文件名"""
+    """过滤操作系统非法字符并规范化学术文献文件名，清除版权与声明等杂质"""
     if not name:
         return ""
+    clean = str(name).strip()
+
+    # 彻底清除版权与出版声明等杂质（如 some rights reserved, all rights reserved, copyright 等）
+    clean = re.sub(r'(?i)\b(?:all|some)\s+rights?\s+reserved\.?', '', clean)
+    clean = re.sub(r'(?i)(?:\bcopyright\b|©|\(c\)).*$', '', clean)
+    clean = re.sub(r'(?i)\bopen\s+access\b\.?', '', clean)
+    clean = re.sub(r'(?i)\bcreative\s+commons\b.*?$', '', clean)
+    clean = re.sub(r'(?i)\[(?:article\s+in\s+[a-z]+|retracted|epub\s+ahead\s+of\s+print)\]', '', clean)
+
     # 替换 Windows / Linux / macOS 文件系统非法字符
-    clean = re.sub(r'[\\/*?:"<>|]', " - ", str(name))
+    clean = re.sub(r'[\\/*?:"<>|]', " - ", clean)
     # 规范化多余空白与连字符
     clean = re.sub(r'\s+', ' ', clean).strip()
-    clean = clean.strip(" ._-")
+    clean = clean.strip(" ._-\n\r\t")
     # 长度截断控制（避免文件名超长无法保存，尽量在完整单词处截断）
     if len(clean) > max_len:
         truncated = clean[:max_len]
@@ -430,9 +439,9 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
     """
     智能提取文献的真实学术标题与 PMID
     流水线策略：
-    1. 前 1~3 页扫描 PMID / DOI -> 优先联网查询 PubMed 官方权威标题；
+    1. 前 1~3 页扫描 PMID / DOI -> 尝试获取 PubMed 官方候选标题；
     2. 若未检索到 -> 解析第 1 页至第 3 页排版（最大字号与逐句后读），提取候选标题；
-    3. 若提供了大模型 agent -> 调用大模型进行深度学术审校过滤噪音；
+    3. 🌟 核心要求：所有结果（包括来自 PubMed 的标题）必须交由大模型严格检查审校，剔除 "some rights reserved" 等杂质；
     4. 所有兜底失败时返回 None。
     :return: (sanitized_title, pmid_str, method_tag)
     """
@@ -462,7 +471,7 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
     combined_text = "\n".join(page_texts)
 
     # ----------------------------------------------------
-    # 阶段一：识别 PMID 与 DOI 并尝试 PubMed 官方权威检索
+    # 阶段一：识别 PMID 与 DOI 并尝试获取 PubMed 官方候选标题
     # ----------------------------------------------------
     pmid = None
     pmid_m = re.search(r"\b(?:PMID|PubMed\s*(?:ID)?)[:\s#]*(\d{6,9})\b", combined_text, re.I)
@@ -477,6 +486,9 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
     if doi_m:
         doi = doi_m.group(1).rstrip(" .;")
 
+    candidate_title = ""
+    candidate_source = "none"
+
     if pmid:
         try:
             from WebSearcher import PubMedSearcher
@@ -485,112 +497,109 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
                 "db": "pubmed", "id": str(pmid), "retmode": "json", "email": ps.email
             }, timeout=6).json()
             t_official = res.get("result", {}).get(str(pmid), {}).get("title")
-            if t_official:
-                clean_t = sanitize_paper_filename(t_official.rstrip("."))
-                if clean_t and len(clean_t) >= 6:
-                    if doc:
-                        doc.close()
-                    return clean_t, pmid, "pubmed_pmid"
+            if t_official and len(t_official.strip()) >= 6:
+                candidate_title = t_official.strip()
+                candidate_source = "pubmed_pmid"
         except Exception as err:
             print(f"⚠️ [extract_paper_title] PMID 在线检索受阻: {err}")
 
-    if doi:
+    if not candidate_title and doi:
         try:
             from WebSearcher import PubMedSearcher
             ps = PubMedSearcher()
             res = ps.search_articles(doi, max_results=1)
             if res and res[0].get("title"):
-                clean_t = sanitize_paper_filename(res[0]["title"].rstrip("."))
-                ret_pmid = res[0].get("pmid") or pmid
-                if clean_t and len(clean_t) >= 6:
-                    if doc:
-                        doc.close()
-                    return clean_t, ret_pmid, "pubmed_doi"
+                candidate_title = res[0]["title"].strip()
+                if not pmid and res[0].get("pmid"):
+                    pmid = res[0]["pmid"]
+                candidate_source = "pubmed_doi"
         except Exception as err:
             print(f"⚠️ [extract_paper_title] DOI 在线检索受阻: {err}")
 
     # ----------------------------------------------------
-    # 阶段二：排版字体块分析 (Font Span 与逐句后读)
+    # 阶段二：若 PubMed 未获候选，则进行排版字体块分析 (Font Span 与逐句后读)
     # ----------------------------------------------------
-    blacklist = [
-        r"^(?:https?://|www\.)",
-        r"^(?:doi:|issn:|isbn:)",
-        r"^(?:volume|vol\.|issue|no\.|pages?|pp\.)\b",
-        r"^(?:received|accepted|published|revised)[:\s]",
-        r"^(?:copyright|©|all rights reserved|open access|creative commons)",
-        r"^(?:article|research article|review article|review|brief report|short communication|perspective|editorial)\b",
-        r"^(?:abstract|summary|graphical abstract|highlights|keywords|introduction)\b",
-        r"^\d{1,4}$",
-    ]
+    if not candidate_title:
+        blacklist = [
+            r"^(?:https?://|www\.)",
+            r"^(?:doi:|issn:|isbn:)",
+            r"^(?:volume|vol\.|issue|no\.|pages?|pp\.)\b",
+            r"^(?:received|accepted|published|revised)[:\s]",
+            r"^(?:copyright|©|all rights reserved|open access|creative commons)",
+            r"^(?:article|research article|review article|review|brief report|short communication|perspective|editorial)\b",
+            r"^(?:abstract|summary|graphical abstract|highlights|keywords|introduction)\b",
+            r"^\d{1,4}$",
+        ]
 
-    candidate_title = ""
+        if doc:
+            try:
+                scan_pages = min(max_pages, len(doc))
+                for pno in range(scan_pages):
+                    page = doc[pno]
+                    blocks = page.get_text("dict").get("blocks", [])
+                    candidate_blocks = []
+                    for b in blocks:
+                        if "lines" not in b:
+                            continue
+                        block_text = ""
+                        sizes = []
+                        for line in b["lines"]:
+                            line_str = "".join([span.get("text", "") for span in line.get("spans", [])]).strip()
+                            if line_str:
+                                block_text += line_str + " "
+                                sizes.extend([span.get("size", 10.0) for span in line.get("spans", [])])
+                        block_text = block_text.strip()
+                        if block_text and sizes:
+                            candidate_blocks.append((max(sizes), block_text))
 
-    if doc:
-        try:
-            scan_pages = min(max_pages, len(doc))
-            for pno in range(scan_pages):
-                page = doc[pno]
-                blocks = page.get_text("dict").get("blocks", [])
-                candidate_blocks = []
-                for b in blocks:
-                    if "lines" not in b:
-                        continue
-                    block_text = ""
-                    sizes = []
-                    for line in b["lines"]:
-                        line_str = "".join([span.get("text", "") for span in line.get("spans", [])]).strip()
-                        if line_str:
-                            block_text += line_str + " "
-                            sizes.extend([span.get("size", 10.0) for span in line.get("spans", [])])
-                    block_text = block_text.strip()
-                    if block_text and sizes:
-                        candidate_blocks.append((max(sizes), block_text))
-
-                candidate_blocks.sort(key=lambda x: x[0], reverse=True)
-                for max_sz, btext in candidate_blocks:
-                    b_low = btext.lower()
-                    if len(b_low) < 6:
-                        continue
-                    is_junk = False
-                    for bp in blacklist:
-                        if re.search(bp, b_low):
-                            is_junk = True
+                    candidate_blocks.sort(key=lambda x: x[0], reverse=True)
+                    for max_sz, btext in candidate_blocks:
+                        b_low = btext.lower()
+                        if len(b_low) < 6:
+                            continue
+                        is_junk = False
+                        for bp in blacklist:
+                            if re.search(bp, b_low):
+                                is_junk = True
+                                break
+                        if not is_junk and 10 <= len(btext) <= 350 and "@" not in btext:
+                            candidate_title = btext.strip()
+                            candidate_source = "layout_font_block"
                             break
-                    if not is_junk and 10 <= len(btext) <= 350 and "@" not in btext:
-                        candidate_title = btext.rstrip(".")
+                    if candidate_title:
+                        break
+            except Exception as e:
+                print(f"⚠️ [extract_paper_title] 排版字号分析出错: {e}")
+
+        # 兜底逐句后读（针对无结构字体信息的文本）
+        if not candidate_title and page_texts:
+            for p_txt in page_texts:
+                lines = [l.strip() for l in p_txt.split("\n") if l.strip()]
+                for l in lines:
+                    l_low = l.lower()
+                    if len(l) < 10 or len(l) > 300:
+                        continue
+                    is_junk = any(re.search(bp, l_low) for bp in blacklist)
+                    if not is_junk and "@" not in l and not l.isdigit():
+                        candidate_title = l.strip()
+                        candidate_source = "sequential_text"
                         break
                 if candidate_title:
                     break
-        except Exception as e:
-            print(f"⚠️ [extract_paper_title] 排版字号分析出错: {e}")
-        finally:
-            doc.close()
 
-    # 兜底逐句后读（针对无结构字体信息的文本）
-    if not candidate_title and page_texts:
-        for p_txt in page_texts:
-            lines = [l.strip() for l in p_txt.split("\n") if l.strip()]
-            for l in lines:
-                l_low = l.lower()
-                if len(l) < 10 or len(l) > 300:
-                    continue
-                is_junk = any(re.search(bp, l_low) for bp in blacklist)
-                if not is_junk and "@" not in l and not l.isdigit():
-                    candidate_title = l.rstrip(".")
-                    break
-            if candidate_title:
-                break
+    if doc:
+        doc.close()
 
     # ----------------------------------------------------
-    # 阶段三：大模型审核 (若提供了 agent)
+    # 阶段三：🌟 核心铁律：所有结果（包含 PubMed 结果）必须经大模型严格审校检查！
     # ----------------------------------------------------
     if agent and hasattr(agent, "review_paper_title"):
         try:
-            reviewed = agent.review_paper_title(combined_text[:3000], candidate_title)
-            if reviewed and len(reviewed) >= 6:
+            reviewed = agent.review_paper_title(combined_text[:3500], candidate_title)
+            if reviewed and len(reviewed) >= 6 and "unknown" not in reviewed.lower():
                 clean_reviewed = sanitize_paper_filename(reviewed)
-                if clean_reviewed:
-                    return clean_reviewed, pmid, "llm_reviewed"
+                if clean_reviewed and len(clean_reviewed) >= 6:
+                    return clean_reviewed, pmid, f"{candidate_source}+llm_reviewed"
         except Exception as err:
             print(f"⚠️ [extract_paper_title] 大模型审校异常: {err}")
 
@@ -599,8 +608,8 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
     # ----------------------------------------------------
     if candidate_title and len(candidate_title) >= 8:
         clean_cand = sanitize_paper_filename(candidate_title)
-        if clean_cand:
-            return clean_cand, pmid, "heuristic"
+        if clean_cand and len(clean_cand) >= 6:
+            return clean_cand, pmid, f"{candidate_source}_heuristic"
 
     return None, pmid, "unrecognized"
 

@@ -3275,19 +3275,21 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                 btn_start_rename = st.button(t("btn_start_rename"), type="primary", use_container_width=True)
 
             if btn_start_rename:
-                targets = cur_papers if selected_rn_target == t("rename_opt_all") else [selected_rn_target]
-                success_list = []
-                skipped_list = []
-                failed_list = []
-
-                agent = None
                 current_api_key = api_key.strip()
-                if current_api_key:
-                    from LLM_SYS import BioBrainAgent
-                    agent = BioBrainAgent(api_key=current_api_key, model=selected_model_id, base_url=base_url)
+                if not is_local and not current_api_key:
+                    st.error(t("err_missing_api_key"))
+                else:
+                    targets = cur_papers if selected_rn_target == t("rename_opt_all") else [selected_rn_target]
+                    success_list = []
+                    skipped_list = []
+                    failed_list = []
 
-                cur_pid = get_current_project_id()
-                papers_dir = get_current_papers_dir()
+                    from LLM_SYS import BioBrainAgent
+                    agent_key = current_api_key if current_api_key else "ollama"
+                    agent = BioBrainAgent(api_key=agent_key, model=selected_model_id, base_url=base_url)
+
+                    cur_pid = get_current_project_id()
+                    papers_dir = get_current_papers_dir()
 
                 with st.spinner(t("msg_renaming_papers")):
                     for fname in targets:

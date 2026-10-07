@@ -51,17 +51,21 @@ class BioBrainAgent:
             raise last_exception
 
     def review_paper_title(self, raw_text: str, candidate_title: str = "") -> str:
-        """大模型审核并提取学术论文真实标题"""
+        """大模型审核并提取学术论文真实标题（严格剥离版权、声明与期刊杂质）"""
         system_prompt = (
             "你是一个专业的生物医学学术文献元数据审校专家。"
-            "你的任务是根据用户提供的文献前 1-3 页文本（以及可选的候选标题），审核并提取出这篇文献的【真实学术论文标题】。\n\n"
-            "【审核与抽取规则】：\n"
-            "1. 只提取论文本身的真实大标题，严格剔除期刊名（如 Nature, Science, Cell, PLOS, PNAS 等）、卷期号、DOI、出版机构、作者姓名、所属单位、以及类别标签（如 Research Article, Review, Brief Report, Short Communication）。\n"
-            "2. 保持论文标题的原始学术语言（通常为英文或中文），不要擅自翻译，修正断行或多余连字符导致的割裂。\n"
-            "3. 如果文本内容过于残缺，或者无法识别出论文真实学术标题，请只回复 'UNKNOWN'。\n"
-            "4. 只输出最终的清洗后论文标题字符串，绝不要输出任何解释、前后缀或 Markdown 标记。"
+            "你的任务是严格审核文献标题，去除一切非标题杂质，输出最终论文的【真实学术论文大标题】。\n\n"
+            "【必须彻底剔除的非标题杂质】：\n"
+            "1. 版权与声明残留：如 'Some rights reserved', 'All rights reserved', 'Copyright © ...', 'Open Access', 'Creative Commons', 'License' 等一切出版声明。\n"
+            "2. 期刊与检索前缀/尾缀：如 'Nature Communications', 'Science (New York, N.Y.)', 'Cell Press', 'PLOS ONE', 卷期号、页码、DOI、PMID。\n"
+            "3. 类别标签与状态：如 'Research Article', 'Review', 'Brief Report', '[Retracted]', '[Article in Chinese]'。\n"
+            "4. 作者列表与所属机构：如 'John Doe et al.', 'Department of ...', 通讯作者标记等。\n\n"
+            "【输出要求】：\n"
+            "1. 保持论文真实大标题本身的学术语言（通常为英文或中文），纠正断行、多余换行或连字符割裂。\n"
+            "2. 只输出最终清洗后的论文真实标题字符串。绝不要输出任何解释、前后缀或 Markdown 引用标记。\n"
+            "3. 若文本或候选标题过于残缺无法提炼出有效标题，请只回复 'UNKNOWN'。"
         )
-        user_content = f"【候选标题（供参考）】：{candidate_title}\n\n【文献前几页文本】：\n{raw_text[:3000]}"
+        user_content = f"【候选标题（可能混有版权声明或期刊信息，必须严格清洗）】：\n{candidate_title}\n\n【文献前几页正文】：\n{raw_text[:3500]}"
         try:
             res = self._ask_llm(system_prompt, user_content)
             if not res:
