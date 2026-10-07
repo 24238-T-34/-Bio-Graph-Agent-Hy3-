@@ -458,6 +458,37 @@ def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 1, agent=None):
     :return: (sanitized_title, pmid_str, method_tag)
     """
     if not os.path.exists(pdf_path):
+        # 兼容线上 PMID 来源（如 "PubMed:40014690", "PMID: 40014690", "40014690" 等无本地 PDF 的来源）
+        src_str = str(pdf_path).strip()
+        pmid_m = re.search(r"(?:^|[\W_])(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", src_str, re.I)
+        if not pmid_m:
+            pmid_m = re.search(r"^(\d{6,9})$", src_str)
+        if pmid_m:
+            online_pmid = pmid_m.group(1)
+            try:
+                from WebSearcher import PubMedSearcher
+                ps = PubMedSearcher()
+                res = ps.session.get(f"{ps.base_url}esummary.fcgi", params={
+                    "db": "pubmed", "id": str(online_pmid), "retmode": "json", "email": ps.email
+                }, timeout=6).json()
+                t_off = res.get("result", {}).get(str(online_pmid), {}).get("title")
+                if t_off and len(t_off.strip()) >= 6:
+                    candidate = t_off.strip()
+                    if agent and hasattr(agent, "clean_and_sanitize_title"):
+                        try:
+                            cleaned = agent.clean_and_sanitize_title(candidate)
+                            if cleaned and len(cleaned) >= 6 and "unknown" not in cleaned.lower():
+                                candidate = cleaned
+                        except Exception as e:
+                            print(f"⚠️ [extract_paper_title] PMID 线上标题大模型清洗受阻: {e}")
+                    clean_final = sanitize_paper_filename(candidate)
+                    if clean_final and len(clean_final) >= 6:
+                        # 规范化学术来源格式：大标题 (PMID: xxxxxxxx)
+                        return f"{clean_final} (PMID: {online_pmid})", online_pmid, "online_pmid+llm_clean"
+            except Exception as e:
+                print(f"⚠️ [extract_paper_title] 线上 PMID 检索失败: {e}")
+            return None, online_pmid, "online_pmid_not_found"
+
         return None, None, "file_not_found"
 
     doc = None

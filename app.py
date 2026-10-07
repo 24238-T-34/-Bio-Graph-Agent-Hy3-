@@ -580,6 +580,9 @@ def rename_project_paper(old_fname: str, new_fname: str, proj_id: str = None) ->
     cur_files = st.session_state.get("analyzed_files", [])
     if old_fname in cur_files:
         st.session_state.analyzed_files = [new_fname if f == old_fname else f for f in cur_files]
+    else:
+        # 如果原来不在 analyzed_files 中（如线上扩展文献），将新名称追加登记
+        st.session_state.analyzed_files.append(new_fname)
 
     # 3. 实体 master_entities 中 doc_source 的全局无感替换
     for ent in st.session_state.get("master_entities", []):
@@ -587,11 +590,13 @@ def rename_project_paper(old_fname: str, new_fname: str, proj_id: str = None) ->
         if ds and old_fname in ds:
             ent["doc_source"] = ds.replace(old_fname, new_fname)
 
-    # 4. 关系 master_relations 中 doc_source 的全局无感替换
+    # 4. 关系 master_relations 中 doc_source 与 reason 证据的全局无感替换
     for rel in st.session_state.get("master_relations", []):
         ds = rel.get("doc_source", "")
         if ds and old_fname in ds:
             rel["doc_source"] = ds.replace(old_fname, new_fname)
+            if "reason" in rel and old_fname in rel.get("reason", ""):
+                rel["reason"] = rel["reason"].replace(old_fname, new_fname)
 
     # 5. 持久化落盘到 project.biokg
     save_local_vault()
@@ -1161,11 +1166,11 @@ UI_TEXT = {
     # 🏷️ 智能文献名称识别与规范化 (Smart Literature Renaming) 模块
     "paper_rename_title": {"zh": "🏷️ 智能文献名称识别与规范化", "en": "🏷️ Smart Paper Title Identification & Renaming"},
     "paper_rename_info": {
-        "zh": "💡 双阶段极简Token识别：优先容错正则匹配首页 DOI/PMID 检索 PubMed 官方标题（0 Token），无DOI时由模型极简快提，统一交由大模型清洗版权与期刊杂质，并持久展示变更看板。",
-        "en": "💡 Two-stage ultra-token-efficient renaming: DOI/PMID regex-first PubMed lookup (0 Token), fallback to fast LLM extraction, unified LLM cleaning, and persistent change reporting."
+        "zh": "💡 全盘文献与出处规范化：同时支持本地物理文献（.pdf）与自动拓展/探索获得的线上文献（如 PubMed:xxxx），统一检索官方学术大标题并经轻量大模型清洗版权杂质，无感同步图谱与记忆库。",
+        "en": "💡 Global literature & source standardization: supports both local PDF papers and online sources (e.g. PubMed:xxxx) from auto-expansion, retrieving official academic titles and sanitizing copyright with LLM."
     },
-    "no_papers_to_rename": {"zh": "当前工程暂无本地物理文献可供重命名。", "en": "No local papers available to rename in current project."},
-    "rename_opt_all": {"zh": "🌟 当前工程全部文献", "en": "🌟 All Papers in Current Project"},
+    "no_papers_to_rename": {"zh": "当前工程暂无可供规范化的文献或出处来源。", "en": "No papers or sources available to standardize in current project."},
+    "rename_opt_all": {"zh": "全部文献与来源", "en": "All Papers & Sources in Current Project"},
     "lbl_select_rename_target": {"zh": "选择重命名目标：", "en": "Select Renaming Target:"},
     "btn_start_rename": {"zh": "🏷️ 开始识别并重命名", "en": "🏷️ Start Identification & Renaming"},
     "msg_renaming_papers": {"zh": "🧠 正在检索官方元数据并进行大模型统一清洗审校...", "en": "🧠 Retrieving metadata and performing unified LLM sanitization..."},
@@ -1657,6 +1662,10 @@ with left_col:
                                 for ent in new_entities:
                                     ent["doc_source"] = f"PubMed:{pmid}"
                                     st.session_state.master_entities.append(ent)
+
+                                pmid_tag = f"PubMed:{pmid}"
+                                if pmid_tag not in st.session_state.analyzed_files:
+                                    st.session_state.analyzed_files.append(pmid_tag)
 
                                 new_relations = agent.extract_relations(abs_text, st.session_state.master_entities)
                                 for rel in new_relations:
@@ -3257,8 +3266,34 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
         st.subheader(t("paper_rename_title"))
         st.info(t("paper_rename_info"))
 
-        cur_papers = [f for f in st.session_state.get("analyzed_files", []) if not is_pmid_or_virtual_source(f)]
-        if not cur_papers:
+        # 全盘聚合所有可规范化的文献与出处来源（包括本地 PDF 与线上拓展所得的 PMID 来源）
+        candidate_sources = set()
+        for f in st.session_state.get("analyzed_files", []):
+            if f and str(f).strip():
+                candidate_sources.add(str(f).strip())
+        for ent in st.session_state.get("master_entities", []):
+            ds = ent.get("doc_source", "")
+            if ds:
+                for part in str(ds).split("|"):
+                    p = part.strip()
+                    if p:
+                        candidate_sources.add(p)
+        for rel in st.session_state.get("master_relations", []):
+            ds = rel.get("doc_source", "")
+            if ds:
+                for part in str(ds).split("|"):
+                    p = part.strip()
+                    if p:
+                        candidate_sources.add(p)
+
+        virtual_ignore_tags = {
+            "AI 分析", "未知", "手动添加", "手动修改", "手动拆分",
+            "AI Analysis", "Unknown", "Manual Add", "Manual Edit", "Manual Split",
+            "无", "None", ""
+        }
+        all_target_sources = [s for s in sorted(list(candidate_sources)) if s not in virtual_ignore_tags]
+
+        if not all_target_sources:
             st.caption(t("no_papers_to_rename"))
         else:
             # 持久展示重命名变更详情看板（明确展示“什么换为了什么”）
@@ -3269,13 +3304,14 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                 fail = rep.get("failed", [])
 
                 if succ:
-                    report_lines = [
-                        f"- 📄 `{old_f}` ➔ 🏷️ **`{new_f}`**" + (f" *(PMID: {pmid_tag})*" if pmid_tag else "")
-                        for old_f, new_f, pmid_tag in succ
-                    ]
-                    st.success(f"🎉 **文献重命名完成（共更新 {len(succ)} 篇）：**\n\n" + "\n".join(report_lines))
+                    report_lines = []
+                    for old_f, new_f, pmid_tag in succ:
+                        icon = "📄" if (new_f.lower().endswith(".pdf") or old_f.lower().endswith(".pdf")) else "🌐"
+                        pmid_str = f" *(PMID: {pmid_tag})*" if (pmid_tag and f"PMID: {pmid_tag}" not in new_f) else ""
+                        report_lines.append(f"- {icon} `{old_f}` ➔ 🏷️ **`{new_f}`**{pmid_str}")
+                    st.success(f"🎉 **文献与出处规范化完成（共更新 {len(succ)} 项）：**\n\n" + "\n".join(report_lines))
                 if skip:
-                    st.info(f"ℹ️ {len(skip)} 篇文献名称已是规范学术标题，无需更名。")
+                    st.info(f"ℹ️ {len(skip)} 项文献/出处名称已是规范学术标题，无需更名。")
                 if fail:
                     for old_f, reason in fail:
                         st.warning(f"⚠️ `{old_f}` 未能成功识别: {reason}")
@@ -3284,12 +3320,23 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                     del st.session_state["rename_history_report"]
                     st.rerun()
 
+            def format_source_label(item_str: str) -> str:
+                if item_str == t("rename_opt_all"):
+                    return f"🌟 {t('rename_opt_all')} ({len(all_target_sources)}项)"
+                fpath = find_project_paper(item_str)
+                if (fpath and os.path.exists(fpath)) or item_str.lower().endswith(".pdf"):
+                    return f"📄 [本地文件] {item_str}"
+                elif is_pmid_or_virtual_source(item_str):
+                    return f"🌐 [线上PMID] {item_str}"
+                return f"🏷️ {item_str}"
+
             col_rn_opt, col_rn_btn = st.columns([3, 2])
             with col_rn_opt:
-                rn_choices = [t("rename_opt_all")] + cur_papers
+                rn_choices = [t("rename_opt_all")] + all_target_sources
                 selected_rn_target = st.selectbox(
                     t("lbl_select_rename_target"),
                     rn_choices,
+                    format_func=format_source_label,
                     key="sel_rename_target"
                 )
             with col_rn_btn:
@@ -3302,7 +3349,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                 if not is_local and not current_api_key:
                     st.error(t("err_missing_api_key"))
                 else:
-                    targets = cur_papers if selected_rn_target == t("rename_opt_all") else [selected_rn_target]
+                    targets = all_target_sources if selected_rn_target == t("rename_opt_all") else [selected_rn_target]
                     success_list = []
                     skipped_list = []
                     failed_list = []
@@ -3315,29 +3362,40 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                     papers_dir = get_current_papers_dir()
 
                     with st.spinner(t("msg_renaming_papers")):
-                        for fname in targets:
-                            fpath = os.path.join(papers_dir, fname)
-                            if not os.path.exists(fpath):
-                                found = find_project_paper(fname)
-                                if found and os.path.exists(found):
-                                    fpath = found
-                                else:
-                                    failed_list.append((fname, t("err_file_not_found")))
-                                    continue
+                        for target_name in targets:
+                            found_path = find_project_paper(target_name)
+                            is_physical = bool((found_path and os.path.exists(found_path)) or target_name.lower().endswith(".pdf"))
 
-                            title, pmid_tag, method = extract_paper_title_and_pmid(fpath, max_pages=1, agent=agent)
-                            if not title:
-                                failed_list.append((fname, t("err_title_unrecognized")))
-                            else:
-                                new_fname = f"{title}.pdf"
-                                if new_fname == fname:
-                                    skipped_list.append(fname)
-                                else:
-                                    ok = rename_project_paper(fname, new_fname, cur_pid)
-                                    if ok:
-                                        success_list.append((fname, new_fname, pmid_tag))
+                            if is_physical:
+                                fpath = os.path.join(papers_dir, target_name)
+                                if not os.path.exists(fpath):
+                                    if found_path and os.path.exists(found_path):
+                                        fpath = found_path
                                     else:
-                                        failed_list.append((fname, "磁盘文件更名写入失败"))
+                                        failed_list.append((target_name, t("err_file_not_found")))
+                                        continue
+
+                                title, pmid_tag, method = extract_paper_title_and_pmid(fpath, max_pages=1, agent=agent)
+                                if not title:
+                                    failed_list.append((target_name, t("err_title_unrecognized")))
+                                    continue
+                                new_name = f"{title}.pdf"
+                            else:
+                                # 线上 PMID 或其他出处来源
+                                title, pmid_tag, method = extract_paper_title_and_pmid(target_name, agent=agent)
+                                if not title:
+                                    failed_list.append((target_name, t("err_title_unrecognized")))
+                                    continue
+                                new_name = title
+
+                            if new_name == target_name:
+                                skipped_list.append(target_name)
+                            else:
+                                ok = rename_project_paper(target_name, new_name, cur_pid)
+                                if ok:
+                                    success_list.append((target_name, new_name, pmid_tag))
+                                else:
+                                    failed_list.append((target_name, "写入更新失败"))
 
                     # 持久化记录重命名看板报告
                     st.session_state.rename_history_report = {
@@ -3348,7 +3406,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
 
                     if success_list:
                         for old_f, new_f, pmid_tag in success_list:
-                            pmid_str = f" (PMID: {pmid_tag})" if pmid_tag else ""
+                            pmid_str = f" (PMID: {pmid_tag})" if (pmid_tag and f"PMID: {pmid_tag}" not in new_f) else ""
                             st.toast(t("toast_rename_success").format(old=old_f, new=new_f) + pmid_str, icon="🏷️")
                         redraw_and_update()
                         save_local_vault()
@@ -3526,6 +3584,10 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                                                                       entity_lang=entity_language)
                                 for ent in new_entities:
                                     ent["doc_source"] = f"PubMed:{pmid}"
+
+                                pmid_tag = f"PubMed:{pmid}"
+                                if pmid_tag not in st.session_state.analyzed_files:
+                                    st.session_state.analyzed_files.append(pmid_tag)
 
                                 combined_entities_dict = st.session_state.master_entities + new_entities
                                 new_relations = agent.extract_relations(abstract, combined_entities_dict)
