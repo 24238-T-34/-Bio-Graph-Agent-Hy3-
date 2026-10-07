@@ -337,10 +337,63 @@ def merge_coarse_relation_into_target(relations: list, src: str, tgt: str, coars
     # 3. 若找到目标机制，执行无损属性吸收
     if target_item is not None:
         merge_relation_attributes(target_item, coarse_item)
+        # 4. 只有在成功吸收合并入目标机制后，才剔除粗糙关系！
+        relations.pop(coarse_idx)
+    else:
+        # 🛡️ 安全防漏保护：若未找到目标机制关系，坚决不 pop，原样安全保留该粗糙关系！
+        print(f"   ⚠️ [提纯防漏] 未在 '{s_clean}' 与 '{t_clean}' 之间找到可吸收的目标机制关系，安全保留粗糙连线。")
 
-    # 4. 剔除粗糙关系
-    relations.pop(coarse_idx)
     return relations
+
+
+def fold_symmetric_relations(relations: list, node_a: str, node_b: str, relation: str = "相关") -> list:
+    """
+    单对节点间双向对称连线的折叠合并：
+    将 node_a 与 node_b 之间的同种对称关系（如'相关'）合并为单向规范条目，
+    无损累加热度权重，无损拼接去重证据原文与文献出处，抹除反向冗余连线。
+    """
+    if not relations:
+        return []
+
+    a_clean = str(node_a).strip()
+    b_clean = str(node_b).strip()
+    r_clean = str(relation).strip()
+
+    # 规范化方向（按字典序确定规范条目的 source 与 target）
+    if a_clean <= b_clean:
+        canon_s, canon_t = a_clean, b_clean
+    else:
+        canon_s, canon_t = b_clean, a_clean
+
+    canonical_item = None
+    to_absorb = []
+    remaining = []
+
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        s = str(rel.get("source", "")).strip()
+        t = str(rel.get("target", "")).strip()
+        r = str(rel.get("relation", "")).strip()
+
+        is_pair = ((s == a_clean and t == b_clean) or (s == b_clean and t == a_clean))
+        if is_pair and r == r_clean:
+            if canonical_item is None:
+                canonical_item = rel
+                # 规范化首个条目的端点为字典序标准方向
+                canonical_item["source"] = canon_s
+                canonical_item["target"] = canon_t
+            else:
+                to_absorb.append(rel)
+        else:
+            remaining.append(rel)
+
+    if canonical_item is not None:
+        for item in to_absorb:
+            merge_relation_attributes(canonical_item, item)
+        remaining.append(canonical_item)
+
+    return remaining
 
 
 def merge_hierarchy_relation(relations: list, parent: str, child: str, reason: str = "") -> list:

@@ -8,7 +8,7 @@ from back_logic import (
     BioGraphPipeline, GraphVisualizer,
     consolidate_homogeneous_relations, purify_mechanism_relations,
     merge_coarse_relation_into_target, is_mechanism_relation,
-    merge_hierarchy_relation
+    merge_hierarchy_relation, fold_symmetric_relations
 )
 from IO_SYS import (
     extract_paper_title_and_pmid, sanitize_paper_filename,
@@ -344,7 +344,7 @@ def resolve_vision_model_id(main_model_id, vision_choice, vision_suffix):
     else:
         # 自由跟随主模型模式：极简匹配已知多模态模型
         mid = (main_model_id or "").lower()
-        if any(k in mid for k in ["gemini", "glm", "deepseek"]):
+        if any(k in mid for k in ["gemini",  "deepseek"]):
             base_id = main_model_id
         else:
             base_id = "google/gemini-2.5-flash-lite"
@@ -1191,6 +1191,7 @@ UI_TEXT = {
     "model_hy3": {"zh": "Hunyuan 3 (正式版 - 最强推理)", "en": "Hunyuan 3 (Official - Max Reasoning)"},
     "model_deepseek_4_1_flash": {"zh": "DeepSeek 4.1 Flash (深度求索极速版)", "en": "DeepSeek 4.1 Flash"},
     "model_glm_5_3": {"zh": "GLM 5.3 (智谱大模型)", "en": "GLM 5.3 (Zhipu AI)"},
+    "model_glm_5_3_f": {"zh": "GLM 5.3 flash(智谱大模型)", "en": "GLM 5.3 flash(Zhipu AI)"},
     "model_gemini_3_8_flash": {"zh": "Gemini 3.8 Flash (谷歌高性价比极速版)", "en": "Gemini 3.8 Flash"},
 
 
@@ -1481,6 +1482,8 @@ UI_TEXT = {
                       "en": "🌳 **Build Hierarchy**: Build `{parent}` ─[Contain]▶ `{child}` (Reason: {reason})"},
     "rev_resolve_cycle": {"zh": "🔄 **破除循环包含**: 确立 `{parent}` ─[包含]▶ `{child}`（无损合并反向证据并消除逆向包含）(原因: {reason})",
                           "en": "🔄 **Resolve Containment Cycle**: Establish `{parent}` ─[Contain]▶ `{child}` (merge reverse evidence and remove reverse edge) (Reason: {reason})"},
+    "rev_fold_symmetric": {"zh": "🔀 **折叠双向相关**: 将 `{node_a}` 与 `{node_b}` 之间的双向“相关”连线折叠为单向规范线（无损合并双方证据与权重）(原因: {reason})",
+                           "en": "🔀 **Fold Symmetric Relation**: Fold bidirectional 'related' edges between `{node_a}` and `{node_b}` into a canonical single edge (merge evidence & heat) (Reason: {reason})"},
     "rev_downgrade": {"zh": "📉 **降级捷径边**: 将连线 `{src} ─[{rel}]▶ {tgt}` 降级为推导虚线 (原因: {reason})",
                       "en": "📉 **Downgrade Shortcut**: Downgrade `{src} ─[{rel}]▶ {tgt}` to inferred dashed line (Reason: {reason})"},
     "rev_remove": {"zh": "✂️ **删除越级连线**: 彻底移除 `{src} ─[{rel}]▶ {tgt}` (原因: {reason})",
@@ -1782,7 +1785,8 @@ with st.sidebar:
                 t("model_qwen_2_5_72b"): "qwen/qwen-2.5-72b-instruct",
                 t("model_deepseek_4_1_flash"): "deepseek/deepseek-v4.1-flash",
                 t("model_gemini_3_8_flash"): "google/gemini-3.8-flash",
-                t("model_glm_5_3"): "zhipu/glm-5.3",
+                t("model_glm_5_3"): "z-ai/glm-5.3",
+                t("model_glm_5_3_f"): "z-ai/glm-5.3-flash",
                 t("model_hy4_preview"): "tencent/hy4-preview",
                 t("model_hy3_preview"): "tencent/hy3-preview",
                 t("model_hy3"): "tencent/hy3",
@@ -3407,7 +3411,22 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
             with st.form("ai_prune_review_form"):
                 selected_actions = []
 
-                for i, sug in enumerate(st.session_state.ai_suggestions):
+                # 按操作类型优先级排序：高确信度结构/环路修复置顶，粗糙关系机制提纯(PURIFY)默认置于最下方
+                ACTION_PRIORITY = {
+                    "MERGE": 10,
+                    "RESOLVE_CYCLE": 12,
+                    "HIERARCHY": 15,
+                    "FOLD_SYMMETRIC": 20,
+                    "DOWNGRADE": 40,
+                    "REMOVE": 50,
+                    "PURIFY": 100,
+                }
+                sorted_suggestions = sorted(
+                    st.session_state.ai_suggestions,
+                    key=lambda x: ACTION_PRIORITY.get(x.get("action", ""), 60)
+                )
+
+                for i, sug in enumerate(sorted_suggestions):
                     action = sug.get("action")
                     reason = sug.get("reason", t("no_reason"))
 
@@ -3425,6 +3444,12 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                         parent = sug.get("parent")
                         child = sug.get("child")
                         label = t("rev_resolve_cycle").format(parent=parent, child=child, reason=reason)
+                        default_checked = True
+                    elif action == "FOLD_SYMMETRIC":
+                        # 🔀 双向相关连线折叠：结构无损去重，默认勾选！
+                        node_a = sug.get("source") or sug.get("node_a")
+                        node_b = sug.get("target") or sug.get("node_b")
+                        label = t("rev_fold_symmetric").format(node_a=node_a, node_b=node_b, reason=reason)
                         default_checked = True
                     elif action == "DOWNGRADE":
                         src = sug.get("source")
@@ -3487,6 +3512,14 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                 st.session_state.master_relations, parent=parent, child=child, reason=reason
                             )
 
+                        elif act["action"] == "FOLD_SYMMETRIC":
+                            # 🔀 双向相关连线折叠：单向规范化，无损合并双方证据、出处并累加热度
+                            node_a = act.get("source") or act.get("node_a")
+                            node_b = act.get("target") or act.get("node_b")
+                            st.session_state.master_relations = fold_symmetric_relations(
+                                st.session_state.master_relations, node_a=node_a, node_b=node_b, relation="相关"
+                            )
+
                         elif act["action"] == "PURIFY":
                             # 🧪 机制提纯合并：将粗糙关系的证据、来源、热度无损合并入目标机制关系中！
                             src = act.get("source")
@@ -3514,6 +3547,13 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                     for r in st.session_state.master_relations
                                 )
                             )
+                            # 🛡️ 信息防漏保护 3：若删除的是“相关”连线且存在反向“相关”连线，绝对不简单丢弃，执行对称折叠合并！
+                            has_opposite_related = (
+                                rel in ["相关", "关联"] and any(
+                                    r.get("source") == tgt and r.get("target") == src and r.get("relation") == rel
+                                    for r in st.session_state.master_relations
+                                )
+                            )
 
                             if rel in ["相关", "关联"] and has_mechanism:
                                 st.session_state.master_relations = merge_coarse_relation_into_target(
@@ -3522,6 +3562,10 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                             elif has_opposite_containment:
                                 st.session_state.master_relations = merge_hierarchy_relation(
                                     st.session_state.master_relations, parent=tgt, child=src, reason=act.get("reason", "")
+                                )
+                            elif has_opposite_related:
+                                st.session_state.master_relations = fold_symmetric_relations(
+                                    st.session_state.master_relations, node_a=src, node_b=tgt, relation=rel
                                 )
                             else:
                                 for i in range(len(st.session_state.master_relations) - 1, -1, -1):
