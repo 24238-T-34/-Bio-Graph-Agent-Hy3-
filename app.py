@@ -4,7 +4,7 @@ import os
 import shutil
 from datetime import datetime
 from pypdf import PdfReader
-from back_logic import BioGraphPipeline,GraphVisualizer
+from back_logic import BioGraphPipeline, GraphVisualizer, consolidate_homogeneous_relations, purify_mechanism_relations
 from IO_SYS import (
     extract_paper_title_and_pmid, sanitize_paper_filename,
     compute_file_content_hash, compute_source_identity_hash,
@@ -2031,6 +2031,9 @@ with left_col:
                                     rel["weight"] = 1
                                     st.session_state.master_relations.append(rel)
 
+                            st.session_state.master_relations = purify_mechanism_relations(
+                                consolidate_homogeneous_relations(st.session_state.master_relations)
+                            )
                             my_bar.progress(1.0, text=t("msg_graph_done"))
                             st.toast(t("toast_start_success"), icon="🎉")
                             st.session_state.show_results = True
@@ -2665,42 +2668,26 @@ if uploaded_file and start_button:
                                 rel["target"] = alignment_map[rel["target"]]
 
                     # ====================================================
-                    # 4. 🔗 核心大招：关系去重与证据融合 (同类合并，异类保留)
+                    # 4. 🔗 核心大招：关系合并与提纯 (同种关系折叠合并，机制关系提纯吸收)
                     # ====================================================
-                    master_rel_map = {}
-                    for existing_rel in st.session_state.master_relations:
-                        key = (existing_rel.get("source"), existing_rel.get("target"), existing_rel.get("relation"))
-                        master_rel_map[key] = existing_rel
-
-                    for rel in new_relations:
-                        key = (rel.get("source"), rel.get("target"), rel.get("relation"))
-                        if key in master_rel_map:
-                            existing_rel = master_rel_map[key]
-                            existing_rel["weight"] = existing_rel.get("weight", 1) + 1
-
-                            old_ev = existing_rel.get("evidence", "")
-                            new_ev = rel.get("evidence", "")
-                            if new_ev and new_ev not in old_ev:
-                                existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
-
-                            old_src = existing_rel.get("doc_source", "")
-                            new_src = rel.get("doc_source", "")
-                            if new_src and new_src not in old_src:
-                                existing_rel["doc_source"] = f"{old_src} | {new_src}"
-                        else:
-                            rel["weight"] = 1
-                            st.session_state.master_relations.append(rel)
-                            master_rel_map[key] = rel
+                    all_rels = st.session_state.master_relations + new_relations
+                    st.session_state.master_relations = purify_mechanism_relations(
+                        consolidate_homogeneous_relations(all_rels)
+                    )
 
                     # 5. 将处理后的“干净”实体数据并入全局中枢
                     st.session_state.master_entities.extend(aligned_new_entities)
 
             elif append_mode:
                 st.session_state.master_entities.extend(new_entities)
-                st.session_state.master_relations.extend(new_relations)
+                st.session_state.master_relations = purify_mechanism_relations(
+                    consolidate_homogeneous_relations(st.session_state.master_relations + new_relations)
+                )
             else:
                 st.session_state.master_entities = new_entities
-                st.session_state.master_relations = new_relations
+                st.session_state.master_relations = purify_mechanism_relations(
+                    consolidate_homogeneous_relations(new_relations)
+                )
 
             # 🟢 阶段三：独立的渲染转圈
             with st.spinner(t("msg_rendering_graph")):
@@ -3030,6 +3017,10 @@ if st.session_state.show_results and st.session_state.html_data:
 
                                 st.session_state.master_entities = [e for e in st.session_state.master_entities if
                                                                     e.get("standard_name") != target_node_name]
+                                # 🧹 实体合并后，执行同种关系折叠合并与高阶机制提纯
+                                st.session_state.master_relations = purify_mechanism_relations(
+                                    consolidate_homogeneous_relations(st.session_state.master_relations)
+                                )
                                 st.toast(t("toast_merge_success").format(target=merge_target), icon="🎉")
                                 redraw_and_update()
                                 st.rerun()
@@ -3493,40 +3484,11 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                     r["is_shortcut"] = True
 
                     # ====================================================
-                    # 🧹 洗树后的终极清理
+                    # 🧹 洗树后的终极清理（先执行同种关系去重与对称折叠，再执行高阶机制提纯吸收）
                     # ====================================================
-                    cleaned_relations = []
-                    master_rel_map = {}
-
-                    for existing_rel in st.session_state.master_relations:
-                        src = str(existing_rel.get("source", "")).strip()
-                        tgt = str(existing_rel.get("target", "")).strip()
-                        rel_type = str(existing_rel.get("relation", "")).strip()
-                        key = (src, tgt, rel_type)
-
-                        if key in master_rel_map:
-                            merged_rel = master_rel_map[key]
-                            merged_rel["weight"] = merged_rel.get("weight", 1) + existing_rel.get("weight", 1)
-                            old_ev = merged_rel.get("evidence", "")
-                            new_ev = existing_rel.get("evidence", "")
-                            if new_ev and new_ev not in old_ev:
-                                merged_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
-                            old_src = merged_rel.get("doc_source", "")
-                            new_src = existing_rel.get("doc_source", "")
-                            if new_src and new_src not in old_src:
-                                merged_rel["doc_source"] = f"{old_src} | {new_src}"
-                            old_reason = merged_rel.get("reason", "")
-                            new_reason = existing_rel.get("reason", "")
-                            if new_reason and new_reason not in old_reason:
-                                merged_rel["reason"] = f"{old_reason} | {new_reason}"
-                        else:
-                            existing_rel["source"] = src
-                            existing_rel["target"] = tgt
-                            existing_rel["relation"] = rel_type
-                            master_rel_map[key] = existing_rel
-                            cleaned_relations.append(existing_rel)
-
-                    st.session_state.master_relations = cleaned_relations
+                    st.session_state.master_relations = purify_mechanism_relations(
+                        consolidate_homogeneous_relations(st.session_state.master_relations)
+                    )
                     st.session_state.ai_suggestions = []
                     st.toast(t("toast_pruning_exec_done"), icon="🎉")
                     redraw_and_update()
@@ -4012,46 +3974,10 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                         if rel.get("target") in alignment_map:
                                             rel["target"] = alignment_map[rel["target"]]
 
-                                master_rel_map = {}
-                                for existing_rel in st.session_state.master_relations:
-                                    src = str(existing_rel.get("source", "")).strip()
-                                    tgt = str(existing_rel.get("target", "")).strip()
-                                    rel_type = str(existing_rel.get("relation", "")).strip()
-                                    key = (src, tgt, rel_type)
-                                    master_rel_map[key] = existing_rel
-
-                                for rel in new_relations:
-                                    src = str(rel.get("source", "")).strip()
-                                    tgt = str(rel.get("target", "")).strip()
-                                    rel_type = str(rel.get("relation", "")).strip()
-                                    key = (src, tgt, rel_type)
-
-                                    if key in master_rel_map:
-                                        existing_rel = master_rel_map[key]
-                                        existing_rel["weight"] = existing_rel.get("weight", 1) + 1
-
-                                        old_ev = existing_rel.get("evidence", "")
-                                        new_ev = rel.get("evidence", "")
-                                        if new_ev and new_ev not in old_ev:
-                                            existing_rel["evidence"] = f"{old_ev}\n---\n{new_ev}"
-
-                                        old_src = existing_rel.get("doc_source", "")
-                                        new_src = rel.get("doc_source", "")
-                                        if new_src and new_src not in old_src:
-                                            existing_rel["doc_source"] = f"{old_src} | {new_src}"
-
-                                        old_reason = existing_rel.get("reason", "")
-                                        new_reason = rel.get("reason", "")
-                                        if new_reason and new_reason not in old_reason:
-                                            existing_rel["reason"] = f"{old_reason} | {new_reason}"
-                                    else:
-                                        rel["source"] = src
-                                        rel["target"] = tgt
-                                        rel["relation"] = rel_type
-                                        rel["weight"] = 1
-                                        st.session_state.master_relations.append(rel)
-                                        master_rel_map[key] = rel
-
+                                all_rels = st.session_state.master_relations + new_relations
+                                st.session_state.master_relations = purify_mechanism_relations(
+                                    consolidate_homogeneous_relations(all_rels)
+                                )
                                 st.session_state.master_entities.extend(aligned_new_entities)
 
                                 # 📝 记录拓展历史日志（全局与工程专属）
@@ -4298,26 +4224,10 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                 if rel.get("target") in alignment_map: rel["target"] = alignment_map[
                                     rel["target"]]
 
-                        master_rel_map = {}
-                        for existing_rel in st.session_state.master_relations:
-                            key = (str(existing_rel.get("source")).strip(),
-                                   str(existing_rel.get("target")).strip(),
-                                   str(existing_rel.get("relation")).strip())
-                            master_rel_map[key] = existing_rel
-
-                        for rel in new_rels:
-                            key = (str(rel.get("source")).strip(), str(rel.get("target")).strip(),
-                                   str(rel.get("relation")).strip())
-                            if key in master_rel_map:
-                                existing_rel = master_rel_map[key]
-                                existing_rel["weight"] = existing_rel.get("weight", 1) + 1
-                                if rel.get("evidence") and rel.get("evidence") not in existing_rel.get(
-                                        "evidence", ""):
-                                    existing_rel[
-                                        "evidence"] = f"{existing_rel.get('evidence', '')}\n---\n{rel.get('evidence')}"
-                            else:
-                                rel["weight"] = 1
-                                st.session_state.master_relations.append(rel)
+                        all_rels = st.session_state.master_relations + new_rels
+                        st.session_state.master_relations = purify_mechanism_relations(
+                            consolidate_homogeneous_relations(all_rels)
+                        )
 
                         for existing_rel in st.session_state.master_relations:
                             src = existing_rel.get("source", "").strip()

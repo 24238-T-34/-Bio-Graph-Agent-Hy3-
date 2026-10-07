@@ -6,6 +6,276 @@ import collections
 import concurrent.futures
 
 # =====================================================================
+# 0. 拓扑关系规整与提纯引擎（无向折叠、同种合并与机制提纯）
+# =====================================================================
+def is_symmetric_relation(rel_type: str) -> bool:
+    """
+    判断关系是否属于无向/对称关系（如'相关'、'相互作用'、'结合'等）。
+    对于对称关系，A->B 与 B->A 在语义与图拓扑上完全等价，应折叠为单一规范方向连线。
+    """
+    if not rel_type or not isinstance(rel_type, str):
+        return True  # 默认缺省视为粗糙相关
+
+    r = rel_type.strip().lower()
+
+    # 1. 强有向关系关键词（绝不对称）
+    directed_markers = [
+        "正作用", "负作用", "包含", "激活", "促进", "抑制", "阻断", "拮抗",
+        "上调", "下调", "降解", "磷酸化", "转录", "诱导", "表达",
+        "activate", "inhibit", "suppress", "promote", "contain", "include",
+        "upregulate", "downregulate", "phosphorylat", "induce"
+    ]
+    for dm in directed_markers:
+        if dm in r:
+            return False
+
+    # 2. 经典对称/互作/无向关系关键词
+    symmetric_markers = [
+        "相关", "关联", "相互作用", "结合", "复合物", "互作",
+        "interact", "correlat", "associat", "bind", "complex"
+    ]
+    for sm in symmetric_markers:
+        if sm in r:
+            return True
+
+    # 3. 兜底判断：系统标准分类中除明确有向动作外，其余均作为粗糙对称连线处理
+    return True
+
+
+def is_mechanism_relation(rel_type: str) -> bool:
+    """判断是否为明确的具体因果机制或层级关系（如'正作用'、'负作用'、'包含'等）"""
+    return not is_symmetric_relation(rel_type)
+
+
+def consolidate_homogeneous_relations(relations: list) -> list:
+    """
+    同种关系合并（去重、对称折叠与属性聚合）：
+    1. 针对对称关系（如“相关”）：将双向 A->B 与 B->A 规整为统一标准方向（按字典序规范节点对，如 min(A,B) -> max(A,B)）；
+    2. 针对有向关系（如“正作用”、“负作用”、“包含”）：保持方向独立性，仅合并同向同类型的重复边；
+    3. 合并属性：累加热度权重 (weight)，按段落去重无损拼接原文证据 (evidence)，
+       去重拼接文献出处 (doc_source) 与文献哈希 (doc_hash)，合并分析原因 (reason)。
+    """
+    if not relations:
+        return []
+
+    master_map = {}
+    ordered_keys = []
+
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+
+        s = str(rel.get("source", "")).strip()
+        t = str(rel.get("target", "")).strip()
+        r = str(rel.get("relation", "")).strip()
+
+        if not s or not t:
+            continue
+
+        # 确定规范方向与聚合主键
+        if is_symmetric_relation(r):
+            # 对称关系：按字典序规范方向，A->B 与 B->A 映射为同一主键
+            if s <= t:
+                canon_s, canon_t = s, t
+            else:
+                canon_s, canon_t = t, s
+            key = (canon_s, canon_t, r)
+        else:
+            # 有向关系：严格保持方向
+            canon_s, canon_t = s, t
+            key = (s, t, r)
+
+        if key in master_map:
+            existing = master_map[key]
+
+            # 1. 权重热度累加
+            w_exist = existing.get("weight", 1)
+            try:
+                w_exist = float(w_exist) if "." in str(w_exist) else int(w_exist)
+            except Exception:
+                w_exist = 1
+            w_new = rel.get("weight", 1)
+            try:
+                w_new = float(w_new) if "." in str(w_new) else int(w_new)
+            except Exception:
+                w_new = 1
+            existing["weight"] = w_exist + w_new
+
+            # 2. 证据原文无损拼接与去重
+            old_ev = str(existing.get("evidence", "")).strip()
+            new_ev = str(rel.get("evidence", "")).strip()
+            if new_ev and new_ev != "无":
+                if not old_ev or old_ev == "无":
+                    existing["evidence"] = new_ev
+                elif new_ev not in old_ev:
+                    existing["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+            # 3. 文献来源去重合并 (以 ' | ' 分隔)
+            old_doc = str(existing.get("doc_source", "")).strip()
+            new_doc = str(rel.get("doc_source", "")).strip()
+            if new_doc and new_doc != "未知文献":
+                if not old_doc or old_doc == "未知文献":
+                    existing["doc_source"] = new_doc
+                else:
+                    docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
+                    docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
+                    for d in docs_new:
+                        if d not in docs_exist:
+                            docs_exist.append(d)
+                    existing["doc_source"] = " | ".join(docs_exist)
+
+            # 4. 文献哈希去重合并
+            old_hash = str(existing.get("doc_hash", "")).strip()
+            new_hash = str(rel.get("doc_hash", "")).strip()
+            if new_hash:
+                if not old_hash:
+                    existing["doc_hash"] = new_hash
+                else:
+                    hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
+                    hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
+                    for h in hashes_new:
+                        if h not in hashes_exist:
+                            hashes_exist.append(h)
+                    existing["doc_hash"] = " | ".join(hashes_exist)
+
+            # 5. 原因说明去重合并
+            old_reason = str(existing.get("reason", "")).strip()
+            new_reason = str(rel.get("reason", "")).strip()
+            if new_reason:
+                if not old_reason:
+                    existing["reason"] = new_reason
+                elif new_reason not in old_reason:
+                    existing["reason"] = f"{old_reason} | {new_reason}"
+
+            # 6. 捷径标记（任一为捷径则保留为捷径）
+            if rel.get("is_shortcut") is True or str(rel.get("is_shortcut")).lower() == "true":
+                existing["is_shortcut"] = True
+
+        else:
+            # 全新边：复制字典并规范化端点
+            new_entry = dict(rel)
+            new_entry["source"] = canon_s
+            new_entry["target"] = canon_t
+            new_entry["relation"] = r
+            if "weight" not in new_entry:
+                new_entry["weight"] = 1
+            master_map[key] = new_entry
+            ordered_keys.append(key)
+
+    return [master_map[k] for k in ordered_keys]
+
+
+def purify_mechanism_relations(relations: list) -> list:
+    """
+    不同关系提纯（高阶机制吸收覆盖粗糙相关连线）：
+    当同一对实体（无视方向）之间同时存在高信息量的具体机制/层级关系（如'正作用'、'负作用'、'包含'）
+    与低信息量的笼统'相关'关系时：
+    1. 将粗糙'相关'关系的原文证据、文献出处、哈希与权重热度完整无损地合并转移至该机制连线上；
+    2. 从图谱中彻底剔除已被机制覆盖的粗糙'相关'冗余连线；
+    3. 若两节点间仅有机制关系，或仅有粗糙相关关系，则予以完整保留。
+    """
+    if not relations:
+        return []
+
+    # 1. 按无向实体对归组
+    pair_groups = {}
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        s = str(rel.get("source", "")).strip()
+        t = str(rel.get("target", "")).strip()
+        if not s or not t:
+            continue
+        pair = (min(s, t), max(s, t))
+        if pair not in pair_groups:
+            pair_groups[pair] = []
+        pair_groups[pair].append(rel)
+
+    purified_relations = []
+
+    for pair, rel_list in pair_groups.items():
+        # 分离明确机制关系与粗糙相关关系
+        mechanisms = [r for r in rel_list if is_mechanism_relation(r.get("relation", ""))]
+        coarse_rels = [r for r in rel_list if not is_mechanism_relation(r.get("relation", ""))]
+
+        if mechanisms and coarse_rels:
+            # 存在机制连线覆盖粗糙相关线：将 coarse_rels 的证据/权重/出处无损吸收进机制关系
+            for c_rel in coarse_rels:
+                c_src = str(c_rel.get("source", "")).strip()
+                c_tgt = str(c_rel.get("target", "")).strip()
+
+                # 优先匹配同向机制关系，若无则吸收进首个机制关系
+                matched_mech = next(
+                    (m for m in mechanisms if str(m.get("source", "")).strip() == c_src and str(m.get("target", "")).strip() == c_tgt),
+                    mechanisms[0]
+                )
+
+                # 1. 权重热度转移
+                w_mech = matched_mech.get("weight", 1)
+                w_coarse = c_rel.get("weight", 1)
+                try:
+                    w_mech = float(w_mech) if "." in str(w_mech) else int(w_mech)
+                    w_coarse = float(w_coarse) if "." in str(w_coarse) else int(w_coarse)
+                    matched_mech["weight"] = w_mech + w_coarse
+                except Exception:
+                    pass
+
+                # 2. 证据原文无损拼接与去重
+                old_ev = str(matched_mech.get("evidence", "")).strip()
+                new_ev = str(c_rel.get("evidence", "")).strip()
+                if new_ev and new_ev != "无":
+                    if not old_ev or old_ev == "无":
+                        matched_mech["evidence"] = new_ev
+                    elif new_ev not in old_ev:
+                        matched_mech["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+                # 3. 文献来源去重合并
+                old_doc = str(matched_mech.get("doc_source", "")).strip()
+                new_doc = str(c_rel.get("doc_source", "")).strip()
+                if new_doc and new_doc != "未知文献":
+                    if not old_doc or old_doc == "未知文献":
+                        matched_mech["doc_source"] = new_doc
+                    else:
+                        docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
+                        docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
+                        for d in docs_new:
+                            if d not in docs_exist:
+                                docs_exist.append(d)
+                        matched_mech["doc_source"] = " | ".join(docs_exist)
+
+                # 4. 文献哈希去重合并
+                old_hash = str(matched_mech.get("doc_hash", "")).strip()
+                new_hash = str(c_rel.get("doc_hash", "")).strip()
+                if new_hash:
+                    if not old_hash:
+                        matched_mech["doc_hash"] = new_hash
+                    else:
+                        hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
+                        hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
+                        for h in hashes_new:
+                            if h not in hashes_exist:
+                                hashes_exist.append(h)
+                        matched_mech["doc_hash"] = " | ".join(hashes_exist)
+
+                # 5. 原因说明去重合并
+                old_reason = str(matched_mech.get("reason", "")).strip()
+                new_reason = str(c_rel.get("reason", "")).strip()
+                if new_reason:
+                    if not old_reason:
+                        matched_mech["reason"] = new_reason
+                    elif new_reason not in old_reason:
+                        matched_mech["reason"] = f"{old_reason} | {new_reason}"
+
+            # 仅保留吸收了粗糙证据的机制关系，粗糙相关关系被剔除
+            purified_relations.extend(mechanisms)
+        else:
+            # 只有机制关系或只有粗糙关系，全部保留
+            purified_relations.extend(rel_list)
+
+    return purified_relations
+
+
+# =====================================================================
 # 4. 系统总调度管道（核心：增量式累加记忆）
 # =====================================================================
 class BioGraphPipeline:
@@ -58,6 +328,7 @@ class BioGraphPipeline:
                     if a:
                         std_map[str(a).strip().lower()] = s_name
 
+        valid_new = []
         for new_rel in new_relations:
             if not isinstance(new_rel, dict):
                 continue
@@ -84,15 +355,13 @@ class BioGraphPipeline:
             if s_std == t_std:
                 continue
 
-            # 判断这条边是否已经存在（根据起点、终点和关系类型）
-            duplicate = any(
-                item.get("source") == s_std and
-                item.get("target") == t_std and
-                item.get("relation") == r
-                for item in self.global_relations
-            )
-            if not duplicate:
-                self.global_relations.append(new_rel)
+            valid_new.append(new_rel)
+
+        # 核心关系规整：先执行同种关系去重与对称合并，再执行具体机制提纯吸收
+        all_relations = self.global_relations + valid_new
+        self.global_relations = purify_mechanism_relations(
+            consolidate_homogeneous_relations(all_relations)
+        )
 
     @staticmethod
     def _is_entity_grounded_in_text(entity_name: str, text: str) -> bool:
