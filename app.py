@@ -273,7 +273,8 @@ def load_config():
             "vision_match_keyword": "",
             "vision_model_choice": "auto",
             "vision_model_suffix": "",
-            "custom_vision_model_id": ""
+            "custom_vision_model_id": "",
+            "active_project_id": ""
         }
 
         if os.path.exists(CONFIG_FILE):
@@ -300,7 +301,8 @@ def save_config():
         "api_provider", "custom_base_url", "selected_model_name", "custom_model_id", "model_suffix",
         "search_database", "is_summary_only", "use_reflection", "append_mode", "enable_relation_grounding",
         "entity_language", "concurrency_workers", "ENABLE_EDITOR", "ENABLE_AI_CLEANER", "ui_language",
-        "vision_strategy", "vision_match_keyword", "vision_model_choice", "vision_model_suffix", "custom_vision_model_id"
+        "vision_strategy", "vision_match_keyword", "vision_model_choice", "vision_model_suffix", "custom_vision_model_id",
+        "active_project_id"
     ]
     # 注意：这里已经没有 empower_ontology 等绘图参数了
     config_to_save = {k: st.session_state[k] for k in config_keys if k in st.session_state}
@@ -344,7 +346,6 @@ def resolve_vision_model_id(main_model_id, vision_choice, vision_suffix):
     return base_id
 
 
-LOCAL_VAULT_FILE = ".current_project.biokg"
 PROJECTS_ROOT_DIR = "projects"
 os.makedirs(PROJECTS_ROOT_DIR, exist_ok=True)
 HISTORY_DIR = ".history_docs"
@@ -357,9 +358,23 @@ def generate_project_id() -> str:
 
 
 def get_current_project_id() -> str:
-    """获取当前活动工程的内部唯一 ID（若无则自动生成）"""
+    """获取当前活动工程的内部唯一 ID（若无则按 active_project_id 或最近修改的工程恢复，否则自动生成）"""
     if "current_project_id" not in st.session_state or not st.session_state.current_project_id:
-        st.session_state.current_project_id = generate_project_id()
+        active_pid = st.session_state.get("active_project_id", "")
+        if active_pid and os.path.exists(os.path.join(PROJECTS_ROOT_DIR, active_pid)):
+            st.session_state.current_project_id = active_pid
+        elif os.path.exists(PROJECTS_ROOT_DIR):
+            dirs = [
+                d for d in os.listdir(PROJECTS_ROOT_DIR)
+                if os.path.isdir(os.path.join(PROJECTS_ROOT_DIR, d)) and os.path.exists(os.path.join(PROJECTS_ROOT_DIR, d, "project.biokg"))
+            ]
+            if dirs:
+                dirs.sort(key=lambda d: os.path.getmtime(os.path.join(PROJECTS_ROOT_DIR, d)), reverse=True)
+                st.session_state.current_project_id = dirs[0]
+            else:
+                st.session_state.current_project_id = generate_project_id()
+        else:
+            st.session_state.current_project_id = generate_project_id()
     return st.session_state.current_project_id
 
 
@@ -425,7 +440,7 @@ def save_analyzed_paper(file_name: str, file_bytes: bytes):
 
 
 def save_local_vault():
-    """将当前记忆库（实体、关系、历史文献、工程 ID 与名称）原地覆写保存到活动缓存及专属归档"""
+    """将当前记忆库（实体、关系、历史文献、工程 ID 与名称）原地保存到专属工程归档 projects/{project_id}/project.biokg（单一真实源）"""
     proj_id = get_current_project_id()
     proj_name = get_current_project_name()
     data = {
@@ -436,14 +451,7 @@ def save_local_vault():
         "relations": st.session_state.get("master_relations", []),
         "analyzed_files": st.session_state.get("analyzed_files", [])
     }
-    # 1. 保存到根目录临时缓存，保障刷新页面状态持久化
-    try:
-        with open(LOCAL_VAULT_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"本地记忆库自动写入失败: {e}")
-
-    # 2. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg
+    # 1. 原地归档到当前工程专属目录 projects/{project_id}/project.biokg（唯一真实数据源）
     try:
         proj_dir = get_project_dir_by_id(proj_id)
         proj_biokg = os.path.join(proj_dir, "project.biokg")
@@ -451,6 +459,10 @@ def save_local_vault():
             json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception as e:
         print(f"工程专属记忆库写入失败: {e}")
+
+    # 2. 将当前活动工程 ID 记录到本地配置中，作为 F5 刷新或冷启动的轻量快速指针
+    st.session_state.active_project_id = proj_id
+    save_config()
 
 
 def redraw_and_update():
@@ -555,7 +567,7 @@ def switch_to_project(proj_id: str) -> bool:
             if os.path.exists(html_file):
                 os.remove(html_file)
 
-        # 🛡️ 步骤 3：原地覆写根缓存 .current_project.biokg，确保页面刷新依然保持在该工程
+        # 🛡️ 步骤 3：保存目标工程并更新 active_project_id 配置指针
         save_local_vault()
         return True
     except Exception as e:
@@ -564,13 +576,16 @@ def switch_to_project(proj_id: str) -> bool:
 
 
 def load_local_vault():
-    """应用启动或页面刷新时，若本地记忆库存在，则自动载入以恢复图谱与工作区元数据"""
-    if os.path.exists(LOCAL_VAULT_FILE):
+    """应用启动或页面刷新时，根据 active_project_id 直接载入专属工程记忆库以恢复图谱与工作区元数据"""
+    proj_id = get_current_project_id()
+    proj_dir = get_project_dir_by_id(proj_id)
+    pkg_file = os.path.join(proj_dir, "project.biokg")
+    if os.path.exists(pkg_file):
         try:
-            with open(LOCAL_VAULT_FILE, "r", encoding="utf-8") as f:
+            with open(pkg_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             # 无论实体是否为空，优先恢复持久化的工程 ID 与课题名称，防止意外生成新工程
-            st.session_state.current_project_id = data.get("project_id", get_current_project_id())
+            st.session_state.current_project_id = data.get("project_id", proj_id)
             pname = data.get("project_name", "默认课题")
             st.session_state.current_project_name = pname
             if "project_name_input_widget" not in st.session_state:
@@ -592,16 +607,12 @@ def load_local_vault():
                 st.session_state.show_results = False
                 st.session_state.html_data = ""
         except Exception as e:
-            print(f"本地记忆库自动加载失败: {e}")
+            print(f"专属工程记忆库自动加载失败: {e}")
 
 
 def clear_local_vault():
-    """新建空白工程时，物理删除本地临时工程缓存，避免残留恢复（不影响 projects/ 下的历史工程文件）"""
-    if os.path.exists(LOCAL_VAULT_FILE):
-        try:
-            os.remove(LOCAL_VAULT_FILE)
-        except Exception as e:
-            print(f"清理本地记忆库失败: {e}")
+    """兼容旧接口：当前工程已完全交由 projects/ 目录管理，无根目录临时文件需清理"""
+    pass
 
 
 # ==========================================
