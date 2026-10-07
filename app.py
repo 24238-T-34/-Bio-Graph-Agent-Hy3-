@@ -896,7 +896,13 @@ UI_TEXT = {
     "btn_cancel": {"zh": "取消", "en": "Cancel"},
     "doc_file_missing": {"zh": "未在本地文件库中找到源文件", "en": "Source file not found in local vault"},
     "upload_project": {"zh": "📥 载入历史工程文件 (.biokg / .json)", "en": "📥 Load History Project (.biokg / .json)"},
-    "btn_confirm_load": {"zh": "🚀 确认载入该工程", "en": "🚀 Confirm Load Project"},
+    "btn_confirm_load": {"zh": "🚀 载入为独立工程", "en": "🚀 Load as Independent Project"},
+    "help_confirm_load": {"zh": "将文件载入为单独的历史工程目录，安全隔离，不修改当前活动工程", "en": "Load as an isolated project folder without modifying current active project"},
+    "btn_confirm_overwrite": {"zh": "🔄 覆盖替换当前活动工程", "en": "🔄 Overwrite Current Active Project"},
+    "help_confirm_overwrite": {"zh": "将当前活动工程的图谱实体、调控关系及文献直接清空替换为载入的文件内容", "en": "Directly replace current active project's entities, relations, and papers with the loaded file"},
+    "toast_load_success": {"zh": "工程【{name}】已成功载入！", "en": "Project [{name}] successfully loaded!"},
+    "toast_overwrite_success": {"zh": "当前工程已成功覆盖替换为【{name}】！", "en": "Current project successfully overwritten with [{name}]!"},
+    "missing_docs_section_title": {"zh": "🛠️ 缺失文献快捷补全", "en": "🛠️ Missing Literature Replenishment"},
     "err_load_project": {"zh": "解析工程文件失败，请检查文件格式是否正确。报错信息: {e}", "en": "Failed to parse project file. Check format. Error: {e}"},
     "project_name_label": {"zh": "🏷️ 项目课题名称", "en": "🏷️ Project Topic Name"},
     "project_name_help": {"zh": "当前研究课题名称，导出与归档目录均将以此命名", "en": "Current topic name; used for export filename and project folder"},
@@ -1824,31 +1830,6 @@ with right_col:
         help=t("project_name_help")
     )
 
-    # 🔍 检测当前活动工程是否存在物理文献缺失，若有则提供便捷补全组件
-    cur_missing = get_project_missing_papers(get_current_project_id())
-    if cur_missing:
-        st.warning(t("missing_docs_alert").format(name=curr_proj_name, count=len(cur_missing)))
-        with st.container():
-            col_sel, col_up = st.columns([1, 1])
-            with col_sel:
-                target_missing_file = st.selectbox(
-                    t("lbl_select_missing_doc"),
-                    cur_missing,
-                    key="select_missing_doc_replenish"
-                )
-            with col_up:
-                replenish_nonce = st.session_state.get("replenish_nonce", 0)
-                replenish_uploaded = st.file_uploader(
-                    t("lbl_upload_replenish_doc"),
-                    type=["pdf"],
-                    key=f"replenish_uploader_{target_missing_file}_{replenish_nonce}"
-                )
-            if replenish_uploaded is not None:
-                save_replenished_paper(target_missing_file, replenish_uploaded.getvalue())
-                st.session_state["replenish_nonce"] = replenish_nonce + 1
-                st.toast(t("toast_replenish_success").format(fname=target_missing_file), icon="🎉")
-                st.rerun()
-
     col_btn1, col_btn2 = st.columns(2)
 
     with col_btn1:
@@ -1907,19 +1888,36 @@ with right_col:
         try:
             loaded_data = json.load(uploaded_project)
 
-            if st.button(t("btn_confirm_load"), type="primary", use_container_width=True):
-                # 🛡️ 步骤 1：载入新工程前，先自动固化当前工程，避免未保存修改丢失
-                save_local_vault()
+            # 兼容老版记忆库 (Auto-Migration)：若缺失 version 或 project_id，自动升格补齐
+            file_stem = os.path.splitext(uploaded_project.name)[0]
+            if "version" not in loaded_data:
+                loaded_data["version"] = "1.0"
+            if not loaded_data.get("project_id"):
+                loaded_data["project_id"] = generate_project_id()
+            if not loaded_data.get("project_name"):
+                loaded_data["project_name"] = file_stem
 
-                # 从记忆库内容中提取存储的值（project_id 与 project_name），绝不依赖外部文件名
-                stored_pid = loaded_data.get("project_id", "")
-                file_stem = os.path.splitext(uploaded_project.name)[0]
-                stored_pname = loaded_data.get("project_name", file_stem)
+            stored_pid = loaded_data.get("project_id", "")
+            stored_pname = loaded_data.get("project_name", file_stem)
 
-                # 智能匹配已有工程目录或生成稳定新目录
-                matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
-                st.session_state.current_project_id = matched_pid
-                st.session_state.current_project_name = stored_pname
+            col_ld1, col_ld2 = st.columns(2)
+            with col_ld1:
+                btn_load_indep = st.button(t("btn_confirm_load"), type="primary", use_container_width=True, help=t("help_confirm_load"))
+            with col_ld2:
+                btn_load_over = st.button(t("btn_confirm_overwrite"), use_container_width=True, help=t("help_confirm_overwrite"))
+
+            if btn_load_indep or btn_load_over:
+                is_overwrite = bool(btn_load_over)
+                if not is_overwrite:
+                    # 🛡️ 步骤 1：独立载入新工程前，先自动固化当前工程，避免未保存修改丢失
+                    save_local_vault()
+                    matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
+                    st.session_state.current_project_id = matched_pid
+                    st.session_state.current_project_name = stored_pname
+                else:
+                    # 覆写模式：保留当前活动工程 ID，将课题名称就地更新为载入工程的课题名
+                    matched_pid = get_current_project_id()
+                    st.session_state.current_project_name = stored_pname
 
                 st.session_state.master_entities = loaded_data.get("entities", [])
                 st.session_state.master_relations = loaded_data.get("relations", [])
@@ -1927,6 +1925,7 @@ with right_col:
 
                 # 文件夹对齐与老文献挂载/合并
                 target_papers_dir = get_project_papers_dir_by_id(matched_pid)
+                os.makedirs(target_papers_dir, exist_ok=True)
                 for fname in loaded_files:
                     target_file_path = os.path.join(target_papers_dir, fname)
                     if not os.path.exists(target_file_path):
@@ -1963,8 +1962,13 @@ with right_col:
                     if os.path.exists(html_file):
                         os.remove(html_file)
 
+                # 原地以新版本标准格式持久化
                 save_local_vault()
                 st.session_state.project_uploader_key = f"project_uploader_{uuid.uuid4().hex}"
+                if is_overwrite:
+                    st.toast(t("toast_overwrite_success").format(name=stored_pname), icon="🔄")
+                else:
+                    st.toast(t("toast_load_success").format(name=stored_pname), icon="🚀")
                 st.rerun()
         except Exception as e:
             st.error(t("err_load_project").format(e=e))
@@ -2101,6 +2105,33 @@ with right_col:
                         if st.button(t("btn_cancel"), key=f"btn_del_no_{proj_id}", use_container_width=True):
                             st.session_state[f"confirm_del_proj_{proj_id}"] = False
                             st.rerun()
+
+    # 3. 当前工程缺失文献快捷补全 (紧随工程库管理下方)
+    cur_missing = get_project_missing_papers(get_current_project_id())
+    if cur_missing:
+        st.markdown("---")
+        st.markdown(f"##### {t('missing_docs_section_title')}")
+        st.warning(t("missing_docs_alert").format(name=get_current_project_name(), count=len(cur_missing)))
+        with st.container():
+            col_sel, col_up = st.columns([1, 1])
+            with col_sel:
+                target_missing_file = st.selectbox(
+                    t("lbl_select_missing_doc"),
+                    cur_missing,
+                    key="select_missing_doc_replenish"
+                )
+            with col_up:
+                replenish_nonce = st.session_state.get("replenish_nonce", 0)
+                replenish_uploaded = st.file_uploader(
+                    t("lbl_upload_replenish_doc"),
+                    type=["pdf"],
+                    key=f"replenish_uploader_{target_missing_file}_{replenish_nonce}"
+                )
+            if replenish_uploaded is not None:
+                save_replenished_paper(target_missing_file, replenish_uploaded.getvalue())
+                st.session_state["replenish_nonce"] = replenish_nonce + 1
+                st.toast(t("toast_replenish_success").format(fname=target_missing_file), icon="🎉")
+                st.rerun()
 
 # ==========================================
 # 核心引擎触发与结果渲染区（全览画布排版）
