@@ -402,3 +402,205 @@ class GraphVisualizer:
 
         net.save_graph(output_file)
         print(f"✨ [GraphVisualizer] 拓扑图已成功保存至: {output_file}")
+
+
+# =====================================================================
+# 3. 文献学术标题提取与安全命名工具集
+# =====================================================================
+def sanitize_paper_filename(name: str, max_len: int = 160) -> str:
+    """过滤操作系统非法字符并规范化学术文献文件名"""
+    if not name:
+        return ""
+    # 替换 Windows / Linux / macOS 文件系统非法字符
+    clean = re.sub(r'[\\/*?:"<>|]', " - ", str(name))
+    # 规范化多余空白与连字符
+    clean = re.sub(r'\s+', ' ', clean).strip()
+    clean = clean.strip(" ._-")
+    # 长度截断控制（避免文件名超长无法保存，尽量在完整单词处截断）
+    if len(clean) > max_len:
+        truncated = clean[:max_len]
+        if " " in truncated:
+            clean = truncated.rsplit(" ", 1)[0]
+        else:
+            clean = truncated
+    return clean.strip(" ._-")
+
+
+def extract_paper_title_and_pmid(pdf_path: str, max_pages: int = 3, agent=None):
+    """
+    智能提取文献的真实学术标题与 PMID
+    流水线策略：
+    1. 前 1~3 页扫描 PMID / DOI -> 优先联网查询 PubMed 官方权威标题；
+    2. 若未检索到 -> 解析第 1 页至第 3 页排版（最大字号与逐句后读），提取候选标题；
+    3. 若提供了大模型 agent -> 调用大模型进行深度学术审校过滤噪音；
+    4. 所有兜底失败时返回 None。
+    :return: (sanitized_title, pmid_str, method_tag)
+    """
+    if not os.path.exists(pdf_path):
+        return None, None, "file_not_found"
+
+    doc = None
+    page_texts = []
+    try:
+        import fitz
+        doc = fitz.open(pdf_path)
+        scan_pages = min(max_pages, len(doc))
+        for pno in range(scan_pages):
+            page_texts.append(doc[pno].get_text())
+    except Exception as e:
+        # Fallback to pypdf
+        try:
+            reader = PdfReader(pdf_path)
+            scan_pages = min(max_pages, len(reader.pages))
+            for pno in range(scan_pages):
+                page_texts.append(reader.pages[pno].extract_text() or "")
+        except Exception:
+            if doc:
+                doc.close()
+            return None, None, "pdf_open_error"
+
+    combined_text = "\n".join(page_texts)
+
+    # ----------------------------------------------------
+    # 阶段一：识别 PMID 与 DOI 并尝试 PubMed 官方权威检索
+    # ----------------------------------------------------
+    pmid = None
+    pmid_m = re.search(r"\b(?:PMID|PubMed\s*(?:ID)?)[:\s#]*(\d{6,9})\b", combined_text, re.I)
+    if not pmid_m:
+        # 兼容文件名自带 PMID 的情况 (如 PMID_12345678.pdf 或 12345678.pdf)
+        pmid_m = re.search(r"(?:pmid[_\-\s:]*)?(\d{6,9})", os.path.basename(pdf_path), re.I)
+    if pmid_m:
+        pmid = pmid_m.group(1)
+
+    doi = None
+    doi_m = re.search(r"\b(?:doi\.org/|doi:\s*)(10\.\d{4,9}/[-._;()/:A-Za-z0-9]+)", combined_text, re.I)
+    if doi_m:
+        doi = doi_m.group(1).rstrip(" .;")
+
+    if pmid:
+        try:
+            from WebSearcher import PubMedSearcher
+            ps = PubMedSearcher()
+            res = ps.session.get(f"{ps.base_url}esummary.fcgi", params={
+                "db": "pubmed", "id": str(pmid), "retmode": "json", "email": ps.email
+            }, timeout=6).json()
+            t_official = res.get("result", {}).get(str(pmid), {}).get("title")
+            if t_official:
+                clean_t = sanitize_paper_filename(t_official.rstrip("."))
+                if clean_t and len(clean_t) >= 6:
+                    if doc:
+                        doc.close()
+                    return clean_t, pmid, "pubmed_pmid"
+        except Exception as err:
+            print(f"⚠️ [extract_paper_title] PMID 在线检索受阻: {err}")
+
+    if doi:
+        try:
+            from WebSearcher import PubMedSearcher
+            ps = PubMedSearcher()
+            res = ps.search_articles(doi, max_results=1)
+            if res and res[0].get("title"):
+                clean_t = sanitize_paper_filename(res[0]["title"].rstrip("."))
+                ret_pmid = res[0].get("pmid") or pmid
+                if clean_t and len(clean_t) >= 6:
+                    if doc:
+                        doc.close()
+                    return clean_t, ret_pmid, "pubmed_doi"
+        except Exception as err:
+            print(f"⚠️ [extract_paper_title] DOI 在线检索受阻: {err}")
+
+    # ----------------------------------------------------
+    # 阶段二：排版字体块分析 (Font Span 与逐句后读)
+    # ----------------------------------------------------
+    blacklist = [
+        r"^(?:https?://|www\.)",
+        r"^(?:doi:|issn:|isbn:)",
+        r"^(?:volume|vol\.|issue|no\.|pages?|pp\.)\b",
+        r"^(?:received|accepted|published|revised)[:\s]",
+        r"^(?:copyright|©|all rights reserved|open access|creative commons)",
+        r"^(?:article|research article|review article|review|brief report|short communication|perspective|editorial)\b",
+        r"^(?:abstract|summary|graphical abstract|highlights|keywords|introduction)\b",
+        r"^\d{1,4}$",
+    ]
+
+    candidate_title = ""
+
+    if doc:
+        try:
+            scan_pages = min(max_pages, len(doc))
+            for pno in range(scan_pages):
+                page = doc[pno]
+                blocks = page.get_text("dict").get("blocks", [])
+                candidate_blocks = []
+                for b in blocks:
+                    if "lines" not in b:
+                        continue
+                    block_text = ""
+                    sizes = []
+                    for line in b["lines"]:
+                        line_str = "".join([span.get("text", "") for span in line.get("spans", [])]).strip()
+                        if line_str:
+                            block_text += line_str + " "
+                            sizes.extend([span.get("size", 10.0) for span in line.get("spans", [])])
+                    block_text = block_text.strip()
+                    if block_text and sizes:
+                        candidate_blocks.append((max(sizes), block_text))
+
+                candidate_blocks.sort(key=lambda x: x[0], reverse=True)
+                for max_sz, btext in candidate_blocks:
+                    b_low = btext.lower()
+                    if len(b_low) < 6:
+                        continue
+                    is_junk = False
+                    for bp in blacklist:
+                        if re.search(bp, b_low):
+                            is_junk = True
+                            break
+                    if not is_junk and 10 <= len(btext) <= 350 and "@" not in btext:
+                        candidate_title = btext.rstrip(".")
+                        break
+                if candidate_title:
+                    break
+        except Exception as e:
+            print(f"⚠️ [extract_paper_title] 排版字号分析出错: {e}")
+        finally:
+            doc.close()
+
+    # 兜底逐句后读（针对无结构字体信息的文本）
+    if not candidate_title and page_texts:
+        for p_txt in page_texts:
+            lines = [l.strip() for l in p_txt.split("\n") if l.strip()]
+            for l in lines:
+                l_low = l.lower()
+                if len(l) < 10 or len(l) > 300:
+                    continue
+                is_junk = any(re.search(bp, l_low) for bp in blacklist)
+                if not is_junk and "@" not in l and not l.isdigit():
+                    candidate_title = l.rstrip(".")
+                    break
+            if candidate_title:
+                break
+
+    # ----------------------------------------------------
+    # 阶段三：大模型审核 (若提供了 agent)
+    # ----------------------------------------------------
+    if agent and hasattr(agent, "review_paper_title"):
+        try:
+            reviewed = agent.review_paper_title(combined_text[:3000], candidate_title)
+            if reviewed and len(reviewed) >= 6:
+                clean_reviewed = sanitize_paper_filename(reviewed)
+                if clean_reviewed:
+                    return clean_reviewed, pmid, "llm_reviewed"
+        except Exception as err:
+            print(f"⚠️ [extract_paper_title] 大模型审校异常: {err}")
+
+    # ----------------------------------------------------
+    # 阶段四：启发式候选与全链路兜底判定
+    # ----------------------------------------------------
+    if candidate_title and len(candidate_title) >= 8:
+        clean_cand = sanitize_paper_filename(candidate_title)
+        if clean_cand:
+            return clean_cand, pmid, "heuristic"
+
+    return None, pmid, "unrecognized"
+

@@ -50,6 +50,30 @@ class BioBrainAgent:
         if last_exception:
             raise last_exception
 
+    def review_paper_title(self, raw_text: str, candidate_title: str = "") -> str:
+        """大模型审核并提取学术论文真实标题"""
+        system_prompt = (
+            "你是一个专业的生物医学学术文献元数据审校专家。"
+            "你的任务是根据用户提供的文献前 1-3 页文本（以及可选的候选标题），审核并提取出这篇文献的【真实学术论文标题】。\n\n"
+            "【审核与抽取规则】：\n"
+            "1. 只提取论文本身的真实大标题，严格剔除期刊名（如 Nature, Science, Cell, PLOS, PNAS 等）、卷期号、DOI、出版机构、作者姓名、所属单位、以及类别标签（如 Research Article, Review, Brief Report, Short Communication）。\n"
+            "2. 保持论文标题的原始学术语言（通常为英文或中文），不要擅自翻译，修正断行或多余连字符导致的割裂。\n"
+            "3. 如果文本内容过于残缺，或者无法识别出论文真实学术标题，请只回复 'UNKNOWN'。\n"
+            "4. 只输出最终的清洗后论文标题字符串，绝不要输出任何解释、前后缀或 Markdown 标记。"
+        )
+        user_content = f"【候选标题（供参考）】：{candidate_title}\n\n【文献前几页文本】：\n{raw_text[:3000]}"
+        try:
+            res = self._ask_llm(system_prompt, user_content)
+            if not res:
+                return candidate_title if candidate_title else ""
+            res = res.strip().strip('"\'`')
+            if "unknown" in res.lower() or len(res) < 5:
+                return ""
+            return res
+        except Exception as e:
+            print(f"⚠️ [BioBrainAgent] 论文标题大模型审核失败: {e}")
+            return candidate_title if candidate_title else ""
+
     def extract_entities_with_reflection(self, text,use_reflection,entity_lang="关闭 (保持原文语言)"):
         """智能体工作流：提取包含标准名和别名的实体字典"""
 
