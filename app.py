@@ -896,12 +896,9 @@ UI_TEXT = {
     "btn_cancel": {"zh": "取消", "en": "Cancel"},
     "doc_file_missing": {"zh": "未在本地文件库中找到源文件", "en": "Source file not found in local vault"},
     "upload_project": {"zh": "📥 载入历史工程文件 (.biokg / .json)", "en": "📥 Load History Project (.biokg / .json)"},
-    "btn_confirm_load": {"zh": "🚀 载入为独立工程", "en": "🚀 Load as Independent Project"},
-    "help_confirm_load": {"zh": "将文件载入为单独的历史工程目录，安全隔离，不修改当前活动工程", "en": "Load as an isolated project folder without modifying current active project"},
-    "btn_confirm_overwrite": {"zh": "🔄 覆盖替换当前活动工程", "en": "🔄 Overwrite Current Active Project"},
-    "help_confirm_overwrite": {"zh": "将当前活动工程的图谱实体、调控关系及文献直接清空替换为载入的文件内容", "en": "Directly replace current active project's entities, relations, and papers with the loaded file"},
-    "toast_load_success": {"zh": "工程【{name}】已成功载入！", "en": "Project [{name}] successfully loaded!"},
-    "toast_overwrite_success": {"zh": "当前工程已成功覆盖替换为【{name}】！", "en": "Current project successfully overwritten with [{name}]!"},
+    "btn_confirm_load": {"zh": "🚀 确认载入该工程", "en": "🚀 Confirm Load Project"},
+    "help_confirm_load": {"zh": "载入该记忆库文件并直接替换当前活动工程的图谱内容与文献", "en": "Load this memory bank file and directly overwrite current active project's graph and papers"},
+    "toast_load_success": {"zh": "工程【{name}】已成功载入并替换当前工程！", "en": "Project [{name}] successfully loaded and replaced current project!"},
     "missing_docs_section_title": {"zh": "🛠️ 缺失文献快捷补全", "en": "🛠️ Missing Literature Replenishment"},
     "err_load_project": {"zh": "解析工程文件失败，请检查文件格式是否正确。报错信息: {e}", "en": "Failed to parse project file. Check format. Error: {e}"},
     "project_name_label": {"zh": "🏷️ 项目课题名称", "en": "🏷️ Project Topic Name"},
@@ -1900,24 +1897,10 @@ with right_col:
             stored_pid = loaded_data.get("project_id", "")
             stored_pname = loaded_data.get("project_name", file_stem)
 
-            col_ld1, col_ld2 = st.columns(2)
-            with col_ld1:
-                btn_load_indep = st.button(t("btn_confirm_load"), type="primary", use_container_width=True, help=t("help_confirm_load"))
-            with col_ld2:
-                btn_load_over = st.button(t("btn_confirm_overwrite"), use_container_width=True, help=t("help_confirm_overwrite"))
-
-            if btn_load_indep or btn_load_over:
-                is_overwrite = bool(btn_load_over)
-                if not is_overwrite:
-                    # 🛡️ 步骤 1：独立载入新工程前，先自动固化当前工程，避免未保存修改丢失
-                    save_local_vault()
-                    matched_pid = find_project_by_id_or_name(stored_pid, stored_pname)
-                    st.session_state.current_project_id = matched_pid
-                    st.session_state.current_project_name = stored_pname
-                else:
-                    # 覆写模式：保留当前活动工程 ID，将课题名称就地更新为载入工程的课题名
-                    matched_pid = get_current_project_id()
-                    st.session_state.current_project_name = stored_pname
+            if st.button(t("btn_confirm_load"), type="primary", use_container_width=True, help=t("help_confirm_load")):
+                # 🔄 直接替换覆盖当前活动工程
+                matched_pid = get_current_project_id()
+                st.session_state.current_project_name = stored_pname
 
                 st.session_state.master_entities = loaded_data.get("entities", [])
                 st.session_state.master_relations = loaded_data.get("relations", [])
@@ -1965,10 +1948,7 @@ with right_col:
                 # 原地以新版本标准格式持久化
                 save_local_vault()
                 st.session_state.project_uploader_key = f"project_uploader_{uuid.uuid4().hex}"
-                if is_overwrite:
-                    st.toast(t("toast_overwrite_success").format(name=stored_pname), icon="🔄")
-                else:
-                    st.toast(t("toast_load_success").format(name=stored_pname), icon="🚀")
+                st.toast(t("toast_load_success").format(name=stored_pname), icon="🔄")
                 st.rerun()
         except Exception as e:
             st.error(t("err_load_project").format(e=e))
