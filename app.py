@@ -7,7 +7,8 @@ from pypdf import PdfReader
 from back_logic import (
     BioGraphPipeline, GraphVisualizer,
     consolidate_homogeneous_relations, purify_mechanism_relations,
-    merge_coarse_relation_into_target, is_mechanism_relation
+    merge_coarse_relation_into_target, is_mechanism_relation,
+    merge_hierarchy_relation
 )
 from IO_SYS import (
     extract_paper_title_and_pmid, sanitize_paper_filename,
@@ -1478,6 +1479,8 @@ UI_TEXT = {
                   "en": "🧲 **Merge Synonyms**: Merge `{removes}` into `{target}` (Reason: {reason})"},
     "rev_hierarchy": {"zh": "🌳 **建立层级**: 建立 `{parent}` ─[包含]▶ `{child}` (原因: {reason})",
                       "en": "🌳 **Build Hierarchy**: Build `{parent}` ─[Contain]▶ `{child}` (Reason: {reason})"},
+    "rev_resolve_cycle": {"zh": "🔄 **破除循环包含**: 确立 `{parent}` ─[包含]▶ `{child}`（无损合并反向证据并消除逆向包含）(原因: {reason})",
+                          "en": "🔄 **Resolve Containment Cycle**: Establish `{parent}` ─[Contain]▶ `{child}` (merge reverse evidence and remove reverse edge) (Reason: {reason})"},
     "rev_downgrade": {"zh": "📉 **降级捷径边**: 将连线 `{src} ─[{rel}]▶ {tgt}` 降级为推导虚线 (原因: {reason})",
                       "en": "📉 **Downgrade Shortcut**: Downgrade `{src} ─[{rel}]▶ {tgt}` to inferred dashed line (Reason: {reason})"},
     "rev_remove": {"zh": "✂️ **删除越级连线**: 彻底移除 `{src} ─[{rel}]▶ {tgt}` (原因: {reason})",
@@ -3418,6 +3421,11 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                         parent = sug.get("parent")
                         child = sug.get("child")
                         label = t("rev_hierarchy").format(parent=parent, child=child, reason=reason)
+                    elif action == "RESOLVE_CYCLE":
+                        parent = sug.get("parent")
+                        child = sug.get("child")
+                        label = t("rev_resolve_cycle").format(parent=parent, child=child, reason=reason)
+                        default_checked = True
                     elif action == "DOWNGRADE":
                         src = sug.get("source")
                         tgt = sug.get("target")
@@ -3465,27 +3473,19 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                         elif act["action"] == "HIERARCHY":
                             parent = act.get("parent")
                             child = act.get("child")
-                            merged_evidence = "AI 智能逻辑推导"
-                            merged_doc_source = "AI 分析"
+                            reason = act.get("reason", "")
+                            st.session_state.master_relations = merge_hierarchy_relation(
+                                st.session_state.master_relations, parent=parent, child=child, reason=reason
+                            )
 
-                            for i in range(len(st.session_state.master_relations) - 1, -1, -1):
-                                r = st.session_state.master_relations[i]
-                                is_match = ((r.get("source") == parent and r.get("target") == child) or
-                                            (r.get("source") == child and r.get("target") == parent))
-                                # ⚠️ 注意这里内部依然保持中文 "相关" 以兼容算法
-                                if is_match and r.get("relation") == "相关":
-                                    merged_evidence = r.get("evidence", merged_evidence)
-                                    merged_doc_source = r.get("doc_source", merged_doc_source)
-                                    st.session_state.master_relations.pop(i)
-
-                            st.session_state.master_relations.append({
-                                "source": parent,
-                                "target": child,
-                                "relation": "包含",  # 内部保持中文
-                                "evidence": merged_evidence,
-                                "reason": act.get("reason"),
-                                "doc_source": merged_doc_source
-                            })
+                        elif act["action"] == "RESOLVE_CYCLE":
+                            # 🔄 专职破除循环包含：确立规范父子单向层级，无损合并逆向包含证据与权重
+                            parent = act.get("parent")
+                            child = act.get("child")
+                            reason = act.get("reason", "")
+                            st.session_state.master_relations = merge_hierarchy_relation(
+                                st.session_state.master_relations, parent=parent, child=child, reason=reason
+                            )
 
                         elif act["action"] == "PURIFY":
                             # 🧪 机制提纯合并：将粗糙关系的证据、来源、热度无损合并入目标机制关系中！
@@ -3501,15 +3501,27 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                             src = act.get("source")
                             tgt = act.get("target")
                             rel = act.get("relation")
-                            # 🛡️ 信息防漏保护：若删除的是粗糙“相关”连线且同对节点间已存在明确机制，绝对不简单丢弃，执行提纯合并！
+                            # 🛡️ 信息防漏保护 1：若删除的是粗糙“相关”连线且同对节点间已存在明确机制，绝对不简单丢弃，执行提纯合并！
                             has_mechanism = any(
                                 ((r.get("source") == src and r.get("target") == tgt) or (r.get("source") == tgt and r.get("target") == src))
                                 and is_mechanism_relation(r.get("relation"))
                                 for r in st.session_state.master_relations
                             )
+                            # 🛡️ 信息防漏保护 2：若删除的是反向“包含”连线且对端已存在正向“包含”层级，绝对不简单丢弃，无损合并入正向层级！
+                            has_opposite_containment = (
+                                rel == "包含" and any(
+                                    r.get("source") == tgt and r.get("target") == src and r.get("relation") == "包含"
+                                    for r in st.session_state.master_relations
+                                )
+                            )
+
                             if rel in ["相关", "关联"] and has_mechanism:
                                 st.session_state.master_relations = merge_coarse_relation_into_target(
                                     st.session_state.master_relations, src, tgt, coarse_rel=rel
+                                )
+                            elif has_opposite_containment:
+                                st.session_state.master_relations = merge_hierarchy_relation(
+                                    st.session_state.master_relations, parent=tgt, child=src, reason=act.get("reason", "")
                                 )
                             else:
                                 for i in range(len(st.session_state.master_relations) - 1, -1, -1):

@@ -47,6 +47,81 @@ def is_mechanism_relation(rel_type: str) -> bool:
     return not is_symmetric_relation(rel_type)
 
 
+def merge_relation_attributes(target_item: dict, incoming_item: dict) -> dict:
+    """
+    通用关系属性无损聚合合并：
+    将 incoming_item 的权重热度 (weight)、原文证据 (evidence)、文献来源 (doc_source)、
+    文献哈希 (doc_hash) 与原因说明 (reason) 无损合并入 target_item。
+    """
+    if not isinstance(target_item, dict) or not isinstance(incoming_item, dict):
+        return target_item
+
+    # 1. 权重热度累加
+    w_tgt = target_item.get("weight", 1)
+    w_inc = incoming_item.get("weight", 1)
+    try:
+        w_tgt = float(w_tgt) if "." in str(w_tgt) else int(w_tgt)
+    except Exception:
+        w_tgt = 1
+    try:
+        w_inc = float(w_inc) if "." in str(w_inc) else int(w_inc)
+    except Exception:
+        w_inc = 1
+    target_item["weight"] = w_tgt + w_inc
+
+    # 2. 证据原文无损拼接与去重
+    old_ev = str(target_item.get("evidence", "")).strip()
+    new_ev = str(incoming_item.get("evidence", "")).strip()
+    if new_ev and new_ev != "无":
+        if not old_ev or old_ev == "无":
+            target_item["evidence"] = new_ev
+        elif new_ev not in old_ev:
+            target_item["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+    # 3. 文献来源去重合并 (以 ' | ' 分隔)
+    old_doc = str(target_item.get("doc_source", "")).strip()
+    new_doc = str(incoming_item.get("doc_source", "")).strip()
+    if new_doc and new_doc != "未知文献":
+        if not old_doc or old_doc == "未知文献":
+            target_item["doc_source"] = new_doc
+        else:
+            docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
+            docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
+            for d in docs_new:
+                if d not in docs_exist:
+                    docs_exist.append(d)
+            target_item["doc_source"] = " | ".join(docs_exist)
+
+    # 4. 文献哈希去重合并
+    old_hash = str(target_item.get("doc_hash", "")).strip()
+    new_hash = str(incoming_item.get("doc_hash", "")).strip()
+    if new_hash:
+        if not old_hash:
+            target_item["doc_hash"] = new_hash
+        else:
+            hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
+            hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
+            for h in hashes_new:
+                if h not in hashes_exist:
+                    hashes_exist.append(h)
+            target_item["doc_hash"] = " | ".join(hashes_exist)
+
+    # 5. 原因说明去重合并
+    old_reason = str(target_item.get("reason", "")).strip()
+    new_reason = str(incoming_item.get("reason", "")).strip()
+    if new_reason:
+        if not old_reason:
+            target_item["reason"] = new_reason
+        elif new_reason not in old_reason:
+            target_item["reason"] = f"{old_reason} | {new_reason}"
+
+    # 6. 捷径标记（任一为捷径则保留为捷径）
+    if incoming_item.get("is_shortcut") is True or str(incoming_item.get("is_shortcut")).lower() == "true":
+        target_item["is_shortcut"] = True
+
+    return target_item
+
+
 def consolidate_homogeneous_relations(relations: list) -> list:
     """
     同种关系合并（去重、对称折叠与属性聚合）：
@@ -87,70 +162,7 @@ def consolidate_homogeneous_relations(relations: list) -> list:
 
         if key in master_map:
             existing = master_map[key]
-
-            # 1. 权重热度累加
-            w_exist = existing.get("weight", 1)
-            try:
-                w_exist = float(w_exist) if "." in str(w_exist) else int(w_exist)
-            except Exception:
-                w_exist = 1
-            w_new = rel.get("weight", 1)
-            try:
-                w_new = float(w_new) if "." in str(w_new) else int(w_new)
-            except Exception:
-                w_new = 1
-            existing["weight"] = w_exist + w_new
-
-            # 2. 证据原文无损拼接与去重
-            old_ev = str(existing.get("evidence", "")).strip()
-            new_ev = str(rel.get("evidence", "")).strip()
-            if new_ev and new_ev != "无":
-                if not old_ev or old_ev == "无":
-                    existing["evidence"] = new_ev
-                elif new_ev not in old_ev:
-                    existing["evidence"] = f"{old_ev}\n---\n{new_ev}"
-
-            # 3. 文献来源去重合并 (以 ' | ' 分隔)
-            old_doc = str(existing.get("doc_source", "")).strip()
-            new_doc = str(rel.get("doc_source", "")).strip()
-            if new_doc and new_doc != "未知文献":
-                if not old_doc or old_doc == "未知文献":
-                    existing["doc_source"] = new_doc
-                else:
-                    docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
-                    docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
-                    for d in docs_new:
-                        if d not in docs_exist:
-                            docs_exist.append(d)
-                    existing["doc_source"] = " | ".join(docs_exist)
-
-            # 4. 文献哈希去重合并
-            old_hash = str(existing.get("doc_hash", "")).strip()
-            new_hash = str(rel.get("doc_hash", "")).strip()
-            if new_hash:
-                if not old_hash:
-                    existing["doc_hash"] = new_hash
-                else:
-                    hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
-                    hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
-                    for h in hashes_new:
-                        if h not in hashes_exist:
-                            hashes_exist.append(h)
-                    existing["doc_hash"] = " | ".join(hashes_exist)
-
-            # 5. 原因说明去重合并
-            old_reason = str(existing.get("reason", "")).strip()
-            new_reason = str(rel.get("reason", "")).strip()
-            if new_reason:
-                if not old_reason:
-                    existing["reason"] = new_reason
-                elif new_reason not in old_reason:
-                    existing["reason"] = f"{old_reason} | {new_reason}"
-
-            # 6. 捷径标记（任一为捷径则保留为捷径）
-            if rel.get("is_shortcut") is True or str(rel.get("is_shortcut")).lower() == "true":
-                existing["is_shortcut"] = True
-
+            merge_relation_attributes(existing, rel)
         else:
             # 全新边：复制字典并规范化端点
             new_entry = dict(rel)
@@ -324,65 +336,95 @@ def merge_coarse_relation_into_target(relations: list, src: str, tgt: str, coars
 
     # 3. 若找到目标机制，执行无损属性吸收
     if target_item is not None:
-        # (1) 权重热度累加
-        w_tgt = target_item.get("weight", 1)
-        w_coarse = coarse_item.get("weight", 1)
-        try:
-            w_tgt = float(w_tgt) if "." in str(w_tgt) else int(w_tgt)
-            w_coarse = float(w_coarse) if "." in str(w_coarse) else int(w_coarse)
-            target_item["weight"] = w_tgt + w_coarse
-        except Exception:
-            pass
-
-        # (2) 证据原文无损拼接与去重
-        old_ev = str(target_item.get("evidence", "")).strip()
-        new_ev = str(coarse_item.get("evidence", "")).strip()
-        if new_ev and new_ev != "无":
-            if not old_ev or old_ev == "无":
-                target_item["evidence"] = new_ev
-            elif new_ev not in old_ev:
-                target_item["evidence"] = f"{old_ev}\n---\n{new_ev}"
-
-        # (3) 文献来源去重合并
-        old_doc = str(target_item.get("doc_source", "")).strip()
-        new_doc = str(coarse_item.get("doc_source", "")).strip()
-        if new_doc and new_doc != "未知文献":
-            if not old_doc or old_doc == "未知文献":
-                target_item["doc_source"] = new_doc
-            else:
-                docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
-                docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
-                for d in docs_new:
-                    if d not in docs_exist:
-                        docs_exist.append(d)
-                target_item["doc_source"] = " | ".join(docs_exist)
-
-        # (4) 文献哈希去重合并
-        old_hash = str(target_item.get("doc_hash", "")).strip()
-        new_hash = str(coarse_item.get("doc_hash", "")).strip()
-        if new_hash:
-            if not old_hash:
-                target_item["doc_hash"] = new_hash
-            else:
-                hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
-                hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
-                for h in hashes_new:
-                    if h not in hashes_exist:
-                        hashes_exist.append(h)
-                target_item["doc_hash"] = " | ".join(hashes_exist)
-
-        # (5) 原因说明去重合并
-        old_reason = str(target_item.get("reason", "")).strip()
-        new_reason = str(coarse_item.get("reason", "")).strip()
-        if new_reason:
-            if not old_reason:
-                target_item["reason"] = new_reason
-            elif new_reason not in old_reason:
-                target_item["reason"] = f"{old_reason} | {new_reason}"
+        merge_relation_attributes(target_item, coarse_item)
 
     # 4. 剔除粗糙关系
     relations.pop(coarse_idx)
     return relations
+
+
+def merge_hierarchy_relation(relations: list, parent: str, child: str, reason: str = "") -> list:
+    """
+    建立层级与破除循环包含（无损合并与拓扑规整）：
+    确立 parent ─[包含]▶ child 的规范单向层级，
+    并将两节点之间所有的反向包含边 (child ─[包含]▶ parent)、已存在的正向包含边、
+    以及低信息量粗糙相关边 (parent <-> child '相关') 的证据、来源、哈希和权重无损聚合到该规范层级边中，
+    彻底消除反向包含与多余粗糙线，破除循环矛盾。
+    """
+    p_clean = str(parent).strip()
+    c_clean = str(child).strip()
+    clean_reason = str(reason).strip() if reason else ""
+
+    if not relations:
+        return [{
+            "source": p_clean,
+            "target": c_clean,
+            "relation": "包含",
+            "evidence": "AI 智能逻辑推导",
+            "doc_source": "AI 分析",
+            "doc_hash": "",
+            "weight": 1,
+            "reason": clean_reason or "建立层级分类"
+        }]
+
+    canonical_item = None
+    to_absorb = []
+    remaining = []
+
+    for rel in relations:
+        if not isinstance(rel, dict):
+            continue
+        s = str(rel.get("source", "")).strip()
+        t = str(rel.get("target", "")).strip()
+        r = str(rel.get("relation", "")).strip()
+
+        is_forward = (s == p_clean and t == c_clean)
+        is_reverse = (s == c_clean and t == p_clean)
+
+        if is_forward and r == "包含":
+            if canonical_item is None:
+                canonical_item = rel
+            else:
+                to_absorb.append(rel)
+        elif is_reverse and r == "包含":
+            # 反向包含边：必须被吸收并消除！
+            to_absorb.append(rel)
+        elif (is_forward or is_reverse) and r in ["相关", "关联"]:
+            # 伴随的粗糙相关边：吸收并消除
+            to_absorb.append(rel)
+        else:
+            remaining.append(rel)
+
+    if canonical_item is None:
+        canonical_item = {
+            "source": p_clean,
+            "target": c_clean,
+            "relation": "包含",
+            "evidence": "",
+            "doc_source": "",
+            "doc_hash": "",
+            "weight": 0,
+            "reason": clean_reason
+        }
+
+    for item in to_absorb:
+        merge_relation_attributes(canonical_item, item)
+
+    # 兜底补充空缺元数据
+    if not str(canonical_item.get("evidence", "")).strip():
+        canonical_item["evidence"] = "AI 智能逻辑推导"
+    if not str(canonical_item.get("doc_source", "")).strip():
+        canonical_item["doc_source"] = "AI 分析"
+    if not canonical_item.get("weight") or canonical_item.get("weight") <= 0:
+        canonical_item["weight"] = 1
+    if clean_reason and (not canonical_item.get("reason") or clean_reason not in str(canonical_item.get("reason"))):
+        if not canonical_item.get("reason"):
+            canonical_item["reason"] = clean_reason
+        else:
+            canonical_item["reason"] = f"{canonical_item['reason']} | {clean_reason}"
+
+    remaining.append(canonical_item)
+    return remaining
 
 
 # =====================================================================
