@@ -1049,6 +1049,9 @@ UI_TEXT = {
                          "en": "⏳ Deep parsing and extracting knowledge from {pmid}..."},
     "toast_skip_short_abstract": {"zh": "文献 {pmid} 摘要为空或过短，已自动跳过。",
                                   "en": "Paper {pmid} abstract is empty or too short, auto-skipped."},
+    "toast_fused_success": {"zh": "✅ 文献 {pmid} 融合成功！", "en": "✅ Paper {pmid} fused successfully!"},
+    "msg_queue_all_done": {"zh": "✅ 队列中的 {total} 篇文献已全部处理完毕！图谱已是最新形态。", "en": "✅ All {total} papers in queue processed! Graph is up to date."},
+    "btn_clear_queue_and_results": {"zh": "🧹 清理队列与搜索结果", "en": "🧹 Clear Queue & Search Results"},
 # 🔗 智能桥接 (Intelligent Bridging)
     "bridge_info": {"zh": "💡 选中两个节点，AI 将在图谱中寻找它们之间的所有多步通路，并推导深层分子机制。如果是孤岛，可一键呼叫 AI 联网挖掘！", "en": "💡 Select two nodes. AI will find all multi-step paths between them and deduce deep mechanisms. If they are isolated, one-click to call AI for web mining!"},
     "lbl_bridge_node_a": {"zh": "🎯 起点实体 (Node A):", "en": "🎯 Source Entity (Node A):"},
@@ -3196,6 +3199,8 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                             abstract = searcher.fetch_abstract(pmid)
                             if len(abstract) < 50:
                                 st.toast(t("toast_skip_short_abstract").format(pmid=pmid), icon="⏭️")
+                                st.session_state.expansion_idx += 1
+                                st.rerun()
                             else:
                                 new_entities = agent.extract_entities_with_reflection(abstract,
                                                                                       use_reflection=use_reflection,
@@ -3295,6 +3300,46 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                         master_rel_map[key] = rel
 
                                 st.session_state.master_entities.extend(aligned_new_entities)
+
+                                # 📝 记录拓展历史日志（全局与工程专属）
+                                log_entry = f"[{datetime.now().strftime('%Y-%m-%d %H:%M')}] PMID: {pmid} | Title: {title}\n"
+                                try:
+                                    log_dir = ".expanded_logs"
+                                    os.makedirs(log_dir, exist_ok=True)
+                                    with open(os.path.join(log_dir, "expansion_history.txt"), "a", encoding="utf-8") as f:
+                                        f.write(log_entry)
+                                except Exception:
+                                    pass
+
+                                try:
+                                    proj_dir = get_project_dir_by_id(get_current_project_id())
+                                    with open(os.path.join(proj_dir, "expansion_history.txt"), "a", encoding="utf-8") as f:
+                                        f.write(log_entry)
+                                except Exception:
+                                    pass
+
+                        # 🚀 推进队列、弹出提示、自动重绘落盘并刷新
+                        st.session_state.expansion_idx += 1
+                        st.toast(t("toast_fused_success").format(pmid=pmid), icon="🎉")
+                        redraw_and_update()
+                        st.rerun()
+
+                    elif btn_skip:
+                        # ⏭️ 处理“跳过这篇”按钮逻辑
+                        st.session_state.expansion_idx += 1
+                        st.rerun()
+
+                else:
+                    # 🏁 队列全部处理完毕分支
+                    st.success(t("msg_queue_all_done").format(total=total))
+                    if "auto_run_expansion" in st.session_state and st.session_state.auto_run_expansion:
+                        st.session_state.auto_run_expansion = False
+
+                    if st.button(t("btn_clear_queue_and_results"), type="primary", use_container_width=True):
+                        st.session_state.expansion_queue = []
+                        st.session_state.pubmed_search_results = []
+                        st.session_state.expansion_idx = 0
+                        st.rerun()
     # -----------------------------------------
     # 模块三：🔗 智能桥接 (Intelligent Bridging)
     # -----------------------------------------
