@@ -880,23 +880,33 @@ def resolve_paper_identity(project_dir_or_id: str, query_ref: str, registry: Opt
     if ref_clean in papers:
         return papers[ref_clean]
 
-    # 2. display_name 匹配
+    # 2. display_name 匹配 (支持忽略大小写与去首尾空格)
     ref_no_pdf = get_clean_display_title(ref_clean)
+    ref_no_pdf_lower = ref_no_pdf.lower()
     for h, item in papers.items():
-        if item.get("display_name") == ref_no_pdf or item.get("display_name") == ref_clean:
+        disp = str(item.get("display_name", "")).strip()
+        if disp == ref_no_pdf or disp == ref_clean or disp.lower() == ref_no_pdf_lower:
             return item
 
     # 3. physical_file 匹配
     ref_with_pdf = get_physical_pdf_filename(ref_clean)
+    ref_with_pdf_lower = ref_with_pdf.lower()
     for h, item in papers.items():
-        if item.get("physical_file") == ref_clean or item.get("physical_file") == ref_with_pdf:
+        phys = str(item.get("physical_file", "")).strip()
+        if phys == ref_clean or phys == ref_with_pdf or phys.lower() == ref_with_pdf_lower:
             return item
 
-    # 4. aliases 曾用名/别名链命中
+    # 4. aliases 曾用名/别名链命中 (支持不区分大小写匹配)
     for h, item in papers.items():
         aliases = item.get("aliases", [])
-        if ref_clean in aliases or ref_no_pdf in aliases or ref_with_pdf in aliases:
-            return item
+        for a in aliases:
+            if not a:
+                continue
+            a_clean = str(a).strip()
+            a_lower = a_clean.lower()
+            if (ref_clean == a_clean or ref_no_pdf == a_clean or ref_with_pdf == a_clean or
+                ref_clean.lower() == a_lower or ref_no_pdf_lower == a_lower or ref_with_pdf_lower == a_lower):
+                return item
 
     # 5. PMID 匹配
     pmid_m = re.search(r"(?:^|[\W_])(?:pmid|pubmed)?[:\s#_-]*(\d{6,9})\b", ref_clean, re.I)
@@ -905,7 +915,7 @@ def resolve_paper_identity(project_dir_or_id: str, query_ref: str, registry: Opt
     if pmid_m:
         pmid_digits = pmid_m.group(1)
         for h, item in papers.items():
-            if item.get("pmid") == pmid_digits or h == f"pmid:{pmid_digits}":
+            if str(item.get("pmid", "")).strip() == pmid_digits or h == f"pmid:{pmid_digits}":
                 return item
 
     # 6. 物理磁盘哈希即时匹配（如用户在外部重命名了磁盘文件）
@@ -921,5 +931,54 @@ def resolve_paper_identity(project_dir_or_id: str, query_ref: str, registry: Opt
                 return papers[disk_hash]
 
     return None
+
+
+def canonicalize_project_papers(project_dir_or_id: str, paper_list: List[str]) -> List[str]:
+    """
+    接收任意来源的文献名称列表（可能包含旧文件名、带.pdf名、曾用名、PubMed变体、复合管道字符串等），
+    基于工程注册表哈希与别名链进行全局身份归一化与哈希折叠：
+    1. 自动拆解管道符 '|' 并剔除系统虚拟标记（如'AI 分析'、'手动添加'等）；
+    2. 对每个出处条目调用 resolve_paper_identity 进行身份解析；
+    3. 命中相同 doc_hash 或文献实体的多个变体/曾用名自动折叠为当前唯一的规范 display_name；
+    4. 未命中的条目自动清洗为去除 .pdf 的纯净展示名（若是在线 PMID 则保留规范格式）；
+    5. 返回按原顺序首次出现去重后的规范纯净展示名列表。
+    """
+    if not paper_list:
+        return []
+
+    virtual_ignore_tags = {
+        "AI 分析", "未知", "手动添加", "手动修改", "手动拆分",
+        "AI Analysis", "Unknown", "Manual Add", "Manual Edit", "Manual Split",
+        "无", "None", ""
+    }
+
+    registry = load_project_paper_registry(project_dir_or_id)
+    seen_identities = set()
+    result = []
+
+    for item in paper_list:
+        if not item:
+            continue
+        # 拆解管道符
+        parts = [p.strip() for p in str(item).split("|") if p.strip()]
+        for p in parts:
+            if not p or p in virtual_ignore_tags:
+                continue
+
+            ident = resolve_paper_identity(project_dir_or_id, p, registry=registry)
+            if ident:
+                ident_key = ident.get("doc_hash") or ident.get("display_name")
+                canon_disp = ident.get("display_name") or get_clean_display_title(p)
+            else:
+                canon_disp = get_clean_display_title(p)
+                ident_key = canon_disp
+
+            if ident_key not in seen_identities and canon_disp not in seen_identities:
+                seen_identities.add(ident_key)
+                seen_identities.add(canon_disp)
+                result.append(canon_disp)
+
+    return result
+
 
 
