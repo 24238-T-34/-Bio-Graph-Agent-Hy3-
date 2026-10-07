@@ -4,7 +4,11 @@ import os
 import shutil
 from datetime import datetime
 from pypdf import PdfReader
-from back_logic import BioGraphPipeline, GraphVisualizer, consolidate_homogeneous_relations, purify_mechanism_relations
+from back_logic import (
+    BioGraphPipeline, GraphVisualizer,
+    consolidate_homogeneous_relations, purify_mechanism_relations,
+    merge_coarse_relation_into_target, is_mechanism_relation
+)
 from IO_SYS import (
     extract_paper_title_and_pmid, sanitize_paper_filename,
     compute_file_content_hash, compute_source_identity_hash,
@@ -1478,6 +1482,10 @@ UI_TEXT = {
                       "en": "📉 **Downgrade Shortcut**: Downgrade `{src} ─[{rel}]▶ {tgt}` to inferred dashed line (Reason: {reason})"},
     "rev_remove": {"zh": "✂️ **删除越级连线**: 彻底移除 `{src} ─[{rel}]▶ {tgt}` (原因: {reason})",
                    "en": "✂️ **Remove Edge**: Completely remove `{src} ─[{rel}]▶ {tgt}` (Reason: {reason})"},
+    "rev_purify": {"zh": "🧪 **机制提纯合并**: 将粗糙连线 `{src} ─[{rel}]▶ {tgt}` 提纯合并入明确机制（无损转移证据并累加热度）(原因: {reason})",
+                   "en": "🧪 **Purify & Merge**: Purify and merge coarse edge `{src} ─[{rel}]▶ {tgt}` into explicit mechanism (transfer evidence & heat) (Reason: {reason})"},
+    "rev_purify_with_target": {"zh": "🧪 **机制提纯合并**: 将 `{src} ─[{rel}]▶ {tgt}` 提纯并入 `[{target_rel}]`（无损转移证据并累加热度）(原因: {reason})",
+                               "en": "🧪 **Purify & Merge**: Purify `{src} ─[{rel}]▶ {tgt}` into `[{target_rel}]` (transfer evidence & heat) (Reason: {reason})"},
     "no_reason": {"zh": "未提供原因", "en": "No reason provided"},
     "btn_confirm_pruning": {"zh": "💾 确认执行选中的优化", "en": "💾 Confirm Executing Selected Optimizations"},
     "toast_pruning_exec_done": {"zh": "✅ 优化已完美执行！", "en": "✅ Optimizations executed perfectly!"},
@@ -2031,8 +2039,8 @@ with left_col:
                                     rel["weight"] = 1
                                     st.session_state.master_relations.append(rel)
 
-                            st.session_state.master_relations = purify_mechanism_relations(
-                                consolidate_homogeneous_relations(st.session_state.master_relations)
+                            st.session_state.master_relations = consolidate_homogeneous_relations(
+                                st.session_state.master_relations
                             )
                             my_bar.progress(1.0, text=t("msg_graph_done"))
                             st.toast(t("toast_start_success"), icon="🎉")
@@ -2668,26 +2676,22 @@ if uploaded_file and start_button:
                                 rel["target"] = alignment_map[rel["target"]]
 
                     # ====================================================
-                    # 4. 🔗 核心大招：关系合并与提纯 (同种关系折叠合并，机制关系提纯吸收)
+                    # 4. 🔗 核心大招：同种关系折叠合并 (去重与对称折叠，不预先自动提纯)
                     # ====================================================
                     all_rels = st.session_state.master_relations + new_relations
-                    st.session_state.master_relations = purify_mechanism_relations(
-                        consolidate_homogeneous_relations(all_rels)
-                    )
+                    st.session_state.master_relations = consolidate_homogeneous_relations(all_rels)
 
                     # 5. 将处理后的“干净”实体数据并入全局中枢
                     st.session_state.master_entities.extend(aligned_new_entities)
 
             elif append_mode:
                 st.session_state.master_entities.extend(new_entities)
-                st.session_state.master_relations = purify_mechanism_relations(
-                    consolidate_homogeneous_relations(st.session_state.master_relations + new_relations)
+                st.session_state.master_relations = consolidate_homogeneous_relations(
+                    st.session_state.master_relations + new_relations
                 )
             else:
                 st.session_state.master_entities = new_entities
-                st.session_state.master_relations = purify_mechanism_relations(
-                    consolidate_homogeneous_relations(new_relations)
-                )
+                st.session_state.master_relations = consolidate_homogeneous_relations(new_relations)
 
             # 🟢 阶段三：独立的渲染转圈
             with st.spinner(t("msg_rendering_graph")):
@@ -3017,9 +3021,9 @@ if st.session_state.show_results and st.session_state.html_data:
 
                                 st.session_state.master_entities = [e for e in st.session_state.master_entities if
                                                                     e.get("standard_name") != target_node_name]
-                                # 🧹 实体合并后，执行同种关系折叠合并与高阶机制提纯
-                                st.session_state.master_relations = purify_mechanism_relations(
-                                    consolidate_homogeneous_relations(st.session_state.master_relations)
+                                # 🧹 实体合并后，执行同种关系折叠合并
+                                st.session_state.master_relations = consolidate_homogeneous_relations(
+                                    st.session_state.master_relations
                                 )
                                 st.toast(t("toast_merge_success").format(target=merge_target), icon="🎉")
                                 redraw_and_update()
@@ -3404,6 +3408,8 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                     action = sug.get("action")
                     reason = sug.get("reason", t("no_reason"))
 
+                    default_checked = True
+
                     if action == "MERGE":
                         target = sug.get("target_node")
                         removes = sug.get("nodes_to_remove", [])
@@ -3417,15 +3423,29 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                         tgt = sug.get("target")
                         rel = sug.get("relation")
                         label = t("rev_downgrade").format(src=src, rel=rel, tgt=tgt, reason=reason)
+                    elif action == "PURIFY":
+                        src = sug.get("source")
+                        tgt = sug.get("target")
+                        rel = sug.get("relation", "相关")
+                        target_rel = sug.get("target_relation")
+                        if target_rel:
+                            label = t("rev_purify_with_target").format(src=src, rel=rel, tgt=tgt, target_rel=target_rel, reason=reason)
+                        else:
+                            label = t("rev_purify").format(src=src, rel=rel, tgt=tgt, reason=reason)
+                        # ⚠️ 机制提纯合并粗糙线交由学者自行决断，默认不勾选！
+                        default_checked = False
                     elif action == "REMOVE":
                         src = sug.get("source")
                         tgt = sug.get("target")
                         rel = sug.get("relation")
                         label = t("rev_remove").format(src=src, rel=rel, tgt=tgt, reason=reason)
+                        # 若针对的是“相关”连线或原因中提及机制覆盖/粗糙冗余，同样默认不勾选！
+                        if rel in ["相关", "关联"] or "机制覆盖" in str(reason) or "粗糙" in str(reason) or "低信息量" in str(reason):
+                            default_checked = False
                     else:
                         continue
 
-                    if st.checkbox(label, value=True, key=f"sug_{i}"):
+                    if st.checkbox(label, value=default_checked, key=f"sug_{i}"):
                         selected_actions.append(sug)
 
                 st.markdown("---")
@@ -3467,15 +3487,36 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                 "doc_source": merged_doc_source
                             })
 
+                        elif act["action"] == "PURIFY":
+                            # 🧪 机制提纯合并：将粗糙关系的证据、来源、热度无损合并入目标机制关系中！
+                            src = act.get("source")
+                            tgt = act.get("target")
+                            rel = act.get("relation", "相关")
+                            target_rel = act.get("target_relation")
+                            st.session_state.master_relations = merge_coarse_relation_into_target(
+                                st.session_state.master_relations, src, tgt, coarse_rel=rel, target_rel=target_rel
+                            )
+
                         elif act["action"] == "REMOVE":
                             src = act.get("source")
                             tgt = act.get("target")
                             rel = act.get("relation")
-                            for i in range(len(st.session_state.master_relations) - 1, -1, -1):
-                                r = st.session_state.master_relations[i]
-                                if r.get("source") == src and r.get("target") == tgt and r.get(
-                                        "relation") == rel:
-                                    st.session_state.master_relations.pop(i)
+                            # 🛡️ 信息防漏保护：若删除的是粗糙“相关”连线且同对节点间已存在明确机制，绝对不简单丢弃，执行提纯合并！
+                            has_mechanism = any(
+                                ((r.get("source") == src and r.get("target") == tgt) or (r.get("source") == tgt and r.get("target") == src))
+                                and is_mechanism_relation(r.get("relation"))
+                                for r in st.session_state.master_relations
+                            )
+                            if rel in ["相关", "关联"] and has_mechanism:
+                                st.session_state.master_relations = merge_coarse_relation_into_target(
+                                    st.session_state.master_relations, src, tgt, coarse_rel=rel
+                                )
+                            else:
+                                for i in range(len(st.session_state.master_relations) - 1, -1, -1):
+                                    r = st.session_state.master_relations[i]
+                                    if r.get("source") == src and r.get("target") == tgt and r.get(
+                                            "relation") == rel:
+                                        st.session_state.master_relations.pop(i)
 
                         elif act["action"] == "DOWNGRADE":
                             for r in st.session_state.master_relations:
@@ -3484,10 +3525,10 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                     r["is_shortcut"] = True
 
                     # ====================================================
-                    # 🧹 洗树后的终极清理（先执行同种关系去重与对称折叠，再执行高阶机制提纯吸收）
+                    # 🧹 洗树后的终极清理（仅执行同种关系去重与对称折叠，保留学者未勾选的连线）
                     # ====================================================
-                    st.session_state.master_relations = purify_mechanism_relations(
-                        consolidate_homogeneous_relations(st.session_state.master_relations)
+                    st.session_state.master_relations = consolidate_homogeneous_relations(
+                        st.session_state.master_relations
                     )
                     st.session_state.ai_suggestions = []
                     st.toast(t("toast_pruning_exec_done"), icon="🎉")
@@ -3975,9 +4016,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                             rel["target"] = alignment_map[rel["target"]]
 
                                 all_rels = st.session_state.master_relations + new_relations
-                                st.session_state.master_relations = purify_mechanism_relations(
-                                    consolidate_homogeneous_relations(all_rels)
-                                )
+                                st.session_state.master_relations = consolidate_homogeneous_relations(all_rels)
                                 st.session_state.master_entities.extend(aligned_new_entities)
 
                                 # 📝 记录拓展历史日志（全局与工程专属）
@@ -4225,9 +4264,7 @@ if ENABLE_AI_CLEANER and len(st.session_state.master_entities) > 0:
                                     rel["target"]]
 
                         all_rels = st.session_state.master_relations + new_rels
-                        st.session_state.master_relations = purify_mechanism_relations(
-                            consolidate_homogeneous_relations(all_rels)
-                        )
+                        st.session_state.master_relations = consolidate_homogeneous_relations(all_rels)
 
                         for existing_rel in st.session_state.master_relations:
                             src = existing_rel.get("source", "").strip()

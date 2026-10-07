@@ -275,6 +275,116 @@ def purify_mechanism_relations(relations: list) -> list:
     return purified_relations
 
 
+def merge_coarse_relation_into_target(relations: list, src: str, tgt: str, coarse_rel: str = "相关", target_rel: str = None) -> list:
+    """
+    单对节点间粗糙关系的提纯合并：
+    将指定实体对间的粗糙关系（如'相关'）的证据、文献来源、哈希和权重热度，
+    无损合并入同对实体间的具体机制关系（如'正作用'、'负作用'、'包含'）中，并安全移除该粗糙关系。
+    若找不到对应机制关系，则回退为安全保留或按需剔除。
+    """
+    if not relations:
+        return []
+
+    s_clean = str(src).strip()
+    t_clean = str(tgt).strip()
+    r_clean = str(coarse_rel).strip()
+
+    # 1. 查找待合并的粗糙关系条目
+    coarse_idx = -1
+    for i, rel in enumerate(relations):
+        rs = str(rel.get("source", "")).strip()
+        rt = str(rel.get("target", "")).strip()
+        rr = str(rel.get("relation", "")).strip()
+        if ((rs == s_clean and rt == t_clean) or (rs == t_clean and rt == s_clean)) and rr == r_clean:
+            coarse_idx = i
+            break
+
+    if coarse_idx == -1:
+        return relations
+
+    coarse_item = relations[coarse_idx]
+
+    # 2. 查找接收证据的目标机制关系
+    target_item = None
+    for rel in relations:
+        if rel is coarse_item:
+            continue
+        rs = str(rel.get("source", "")).strip()
+        rt = str(rel.get("target", "")).strip()
+        rr = str(rel.get("relation", "")).strip()
+        if (rs == s_clean and rt == t_clean) or (rs == t_clean and rt == s_clean):
+            if target_rel:
+                if rr == str(target_rel).strip():
+                    target_item = rel
+                    break
+            else:
+                if is_mechanism_relation(rr):
+                    target_item = rel
+                    break
+
+    # 3. 若找到目标机制，执行无损属性吸收
+    if target_item is not None:
+        # (1) 权重热度累加
+        w_tgt = target_item.get("weight", 1)
+        w_coarse = coarse_item.get("weight", 1)
+        try:
+            w_tgt = float(w_tgt) if "." in str(w_tgt) else int(w_tgt)
+            w_coarse = float(w_coarse) if "." in str(w_coarse) else int(w_coarse)
+            target_item["weight"] = w_tgt + w_coarse
+        except Exception:
+            pass
+
+        # (2) 证据原文无损拼接与去重
+        old_ev = str(target_item.get("evidence", "")).strip()
+        new_ev = str(coarse_item.get("evidence", "")).strip()
+        if new_ev and new_ev != "无":
+            if not old_ev or old_ev == "无":
+                target_item["evidence"] = new_ev
+            elif new_ev not in old_ev:
+                target_item["evidence"] = f"{old_ev}\n---\n{new_ev}"
+
+        # (3) 文献来源去重合并
+        old_doc = str(target_item.get("doc_source", "")).strip()
+        new_doc = str(coarse_item.get("doc_source", "")).strip()
+        if new_doc and new_doc != "未知文献":
+            if not old_doc or old_doc == "未知文献":
+                target_item["doc_source"] = new_doc
+            else:
+                docs_exist = [d.strip() for d in old_doc.split("|") if d.strip()]
+                docs_new = [d.strip() for d in new_doc.split("|") if d.strip()]
+                for d in docs_new:
+                    if d not in docs_exist:
+                        docs_exist.append(d)
+                target_item["doc_source"] = " | ".join(docs_exist)
+
+        # (4) 文献哈希去重合并
+        old_hash = str(target_item.get("doc_hash", "")).strip()
+        new_hash = str(coarse_item.get("doc_hash", "")).strip()
+        if new_hash:
+            if not old_hash:
+                target_item["doc_hash"] = new_hash
+            else:
+                hashes_exist = [h.strip() for h in old_hash.split("|") if h.strip()]
+                hashes_new = [h.strip() for h in new_hash.split("|") if h.strip()]
+                for h in hashes_new:
+                    if h not in hashes_exist:
+                        hashes_exist.append(h)
+                target_item["doc_hash"] = " | ".join(hashes_exist)
+
+        # (5) 原因说明去重合并
+        old_reason = str(target_item.get("reason", "")).strip()
+        new_reason = str(coarse_item.get("reason", "")).strip()
+        if new_reason:
+            if not old_reason:
+                target_item["reason"] = new_reason
+            elif new_reason not in old_reason:
+                target_item["reason"] = f"{old_reason} | {new_reason}"
+
+    # 4. 剔除粗糙关系
+    relations.pop(coarse_idx)
+    return relations
+
+
 # =====================================================================
 # 4. 系统总调度管道（核心：增量式累加记忆）
 # =====================================================================
@@ -357,11 +467,9 @@ class BioGraphPipeline:
 
             valid_new.append(new_rel)
 
-        # 核心关系规整：先执行同种关系去重与对称合并，再执行具体机制提纯吸收
+        # 核心关系规整：执行同种关系去重与对称合并（保留异类机制与相关共存，不预先自动提纯）
         all_relations = self.global_relations + valid_new
-        self.global_relations = purify_mechanism_relations(
-            consolidate_homogeneous_relations(all_relations)
-        )
+        self.global_relations = consolidate_homogeneous_relations(all_relations)
 
     @staticmethod
     def _is_entity_grounded_in_text(entity_name: str, text: str) -> bool:
